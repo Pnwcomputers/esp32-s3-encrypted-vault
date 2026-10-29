@@ -8,7 +8,19 @@ Dated sections before 1.0.0 record development history before the first release.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-29
+
 ### Firmware
+- New virtual volumes >=4 GiB use 32 KiB FAT32 clusters. On one 64 GB device,
+  recreating the virtual filesystem reduced the observed mount workload from
+  about 124 seconds / 29,619 reads to 30 seconds / 3,761 reads, with zero device
+  errors. Existing volumes keep their geometry; back up files before conversion.
+- Add 16 KiB encrypted-drive file buffers and enable FAT fast-seek for read-only
+  backing files. Periodic LCD updates release the shared USB gate before drawing.
+- Add slow-transfer/flush logging and `02 GET_USB_DIAGNOSTICS`, plus
+  `tools/usb_diagnostics.py`, to retain the first failed transfer and distinguish
+  map/data I/O, authentication and cache-flush failures. Polling is not activity.
+- Embed application version 1.1.0; CDC status reports 0x0101 (major/minor).
 - When the microSD card can't be used, the LCD, web portal and unlock error now say
   why: exFAT or NTFS card ("reformat it as FAT32"), no readable FAT32 filesystem,
   card not detected, or vault folders not creatable. `/api/status` gains an
@@ -24,8 +36,18 @@ Dated sections before 1.0.0 record development history before the first release.
   **Enable/Reconnect SD card drive**.
 
 ### Documentation
-- README: lead with the project's goal, a low-cost (~$25) alternative to $150+
-  encrypted flash drives, and add a "Why This Exists" cost/trade-off comparison.
+- Preserve the updated README description, hardware links and cost estimates.
+- Record the backup, restore hash checks, measured mount improvement and
+  outstanding limits in `docs/VALIDATION.md`. exFAT remains deferred.
+
+### Compatibility and validation
+- The encrypted on-card format and settings remain compatible with 1.0.0;
+  older single-block VLTTXN2 journals are still supported.
+- The release targets the Waveshare ESP32-S3-LCD-1.47 USB stick, 16 MB flash
+  and 8 MB octal PSRAM, using ESP-IDF 5.5.5.
+- This remains development firmware. Mounting is faster, not instantaneous;
+  read/write throughput remains limited by full-speed USB, encryption and
+  journaling. The 128 GB device has not been hardware-tested in this update.
 
 ## [1.0.0] - 2026-10-21
 

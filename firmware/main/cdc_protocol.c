@@ -101,7 +101,7 @@ static void handle_get_status(uint32_t req_id, const uint8_t *payload, uint32_t 
     uint8_t resp[16];
     resp[0] = STATUS_OK;
     resp[1] = vault_storage_is_unlocked() ? 1 : 0;
-    uint16_t fw_ver = 0x0100;
+    uint16_t fw_ver = 0x0101; /* v1.1.x: protocol encodes major/minor only. */
     memcpy(resp + 2, &fw_ver, 2);
     memcpy(resp + 4, &total_mb, 4);
     memcpy(resp + 8, &free_mb, 4);

@@ -14,6 +14,8 @@ CRC detects accidental corruption; it provides no authentication or confidential
 Request payloads are bounded at 4224 bytes. LIST_FILES responses can contain up to
 41221 bytes (256 records with maximum-length names); all other responses are bounded at 4224.
 Responses echo the command and request ID. The first payload byte is the status.
+Firmware 1.1.0 reports version `0x0101` in GET_STATUS; this field encodes only
+major/minor, while the application image carries the full semantic version.
 
 ## Commands and payloads
 
