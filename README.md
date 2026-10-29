@@ -16,7 +16,7 @@
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 ![Release](https://img.shields.io/github/v/release/Pnwcomputers/esp32-s3-encrypted-drive)
 
-### **A ~$25 encrypted USB drive you build yourself: an ESP32-S3 stick plus any microSD card, unlocked from your phone**
+### **A $100 +/- encrypted USB drive you build yourself: an ESP32-S3 stick plus any microSD card, unlocked from your phone**
 
 Hardware-encrypted flash drives typically cost **$150–$250 for just 64 GB**. This project does the same basic job with about **$25 of parts**: a ~$13 ESP32-S3 USB stick and an ordinary microSD card. Need more space? Swap in a bigger card. The firmware is open source (MIT), so you can read exactly how your data is protected.
 
