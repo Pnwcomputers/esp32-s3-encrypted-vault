@@ -18,6 +18,7 @@ extern "C" {
 
 // Commands
 #define CMD_GET_STATUS          0x01
+#define CMD_GET_USB_DIAGNOSTICS 0x02
 #define CMD_LIST_FILES          0x10
 #define CMD_UPLOAD_BEGIN        0x20
 #define CMD_UPLOAD_CHUNK        0x21

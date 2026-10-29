@@ -1,7 +1,8 @@
 # USB CDC protocol v1
 
 The implementation is in `firmware/main/cdc_protocol.c`; host codecs are in `desktop/protocol.py`.
-Native USB CDC-ACM transports framed requests and responses. No mass-storage drive letter is exposed.
+Native USB CDC-ACM transports framed requests and responses alongside the optional
+encrypted USB mass-storage drive.
 Unlock through the persistent Wi-Fi controller. USB never accepts a PIN or key export request.
 
 ## Frame
@@ -19,6 +20,7 @@ Responses echo the command and request ID. The first payload byte is the status.
 | Command | Request | Successful response after status byte |
 |---|---|---|
 | `01 GET_STATUS` | Empty | unlocked u8, firmware version u16, total MB u32, free MB u32, file count u32 |
+| `02 GET_USB_DIAGNOSTICS` | Empty | ASCII key=value fields: ready, reads, writes, errors, error_lba, error_bytes, error, max_ms, stage |
 | `10 LIST_FILES` | Empty | count u32, then records: name length u16, UTF-8 name, size u64, modified time u64, ID[16] |
 | `20 UPLOAD_BEGIN` | name length u16, UTF-8 name, total size u64 | ID[16], chunk size u32 (4096) |
 | `21 UPLOAD_CHUNK` | ID[16], index u32, bytes | acknowledged index u32 |
@@ -31,8 +33,11 @@ Responses echo the command and request ID. The first payload byte is the status.
 
 Status codes: 0 OK, 1 locked, 2 not found, 3 authentication failure, 4 storage error,
 5 invalid argument, 6 busy, 7 out of memory. Error payloads contain only a status byte.
-Only GET_STATUS and LOCK are useful while locked; status omits storage metadata then.
-There is no `02 UNLOCK_SESSION` implementation.
+GET_STATUS, GET_USB_DIAGNOSTICS and LOCK are useful while locked; status omits
+storage metadata then. Diagnostics are also allowed while MSC is exported.
+They contain counters and the first failing transfer's location/result, but no
+file contents, names, credentials or keys. Counters reset on device restart;
+the storage failure stage survives drive close. This command does not unlock.
 
 Files are limited to 4 GiB minus 1 byte and names to 127 UTF-8 bytes. A chunk is exactly
 4096 bytes except the final chunk. An empty file has one authenticated zero-byte chunk.

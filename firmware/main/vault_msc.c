@@ -9,12 +9,23 @@
 #include "esp_log.h"
 #include "tusb.h"
 #include <string.h>
+#include <stdio.h>
 
 /* Cached drive writes are committed after this long without a new write. */
 #define FLUSH_IDLE_US 1000000
 
 static bool s_worker, s_changed, s_flusher;
 static int64_t s_last_write;
+static uint32_t s_reads,s_writes,s_errors,s_error_lba,s_error_size,s_max_ms;
+static int s_error_code;
+size_t vault_msc_diagnostics(char *out,size_t size) {
+    if(!out || !size)return 0;
+    int n=snprintf(out,size,"ready=%u reads=%lu writes=%lu errors=%lu error_lba=%lu error_bytes=%lu error=%d max_ms=%lu stage=%s",
+        vault_drive_ready(),(unsigned long)s_reads,(unsigned long)s_writes,(unsigned long)s_errors,
+        (unsigned long)s_error_lba,(unsigned long)s_error_size,s_error_code,
+        (unsigned long)s_max_ms,vault_drive_last_error());
+    return n<0?0:(size_t)n<size?(size_t)n:size-1;
+}
 static esp_err_t flush_drive(void) {
     int64_t started=esp_timer_get_time();
     esp_err_t err=vault_drive_flush();
@@ -108,8 +119,15 @@ static int32_t transfer(uint8_t lun,uint32_t lba,uint32_t offset,void *buffer,ui
         else tud_msc_set_sense(lun,err==ESP_ERR_INVALID_ARG?SCSI_SENSE_ILLEGAL_REQUEST:SCSI_SENSE_MEDIUM_ERROR,
                                err==ESP_ERR_INVALID_ARG?0x21:0x11,0);
     }
-    vault_runtime_leave();
     int64_t elapsed=esp_timer_get_time()-started;
+    if(write)s_writes++;else s_reads++;
+    if(err!=ESP_OK) {
+        /* Preserve the first failure; later no-medium responses are fallout. */
+        if(!s_errors) { s_error_lba=lba;s_error_size=size;s_error_code=err; }
+        s_errors++;
+    }
+    if(elapsed/1000>s_max_ms)s_max_ms=elapsed/1000;
+    vault_runtime_leave();
     if(elapsed>=250000)
         ESP_LOGW("vault_msc","Slow USB %s: LBA %lu offset %lu bytes %lu took %lld ms (err %d)",
                  write?"write":"read",(unsigned long)lba,(unsigned long)offset,
