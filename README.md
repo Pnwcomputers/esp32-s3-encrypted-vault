@@ -82,7 +82,7 @@ A full multi-dimension code + security review is in [`docs/CODE_REVIEW.md`](docs
 - **🔌 USB CDC file protocol + desktop tools**; A second interface offers a framed, CRC-checked file-transfer protocol with a Python CLI and GUI.
 - **🖥️ LCD status + RGB LED**; ST7789 1.47″ LCD status screen (LVGL 9) and a GPIO38 WS2812 status LED (normal / dim / off).
 - **🔒 Lock discipline**; Idle auto-lock, lock-on-eject, and credential rotation that rewraps the data key **without** rewriting file contents. Session keys are zeroed on lock.
-- **🧱 Durable writes**; Each host write commits an authenticated redo-journal entry (then segment, map and root) with flush/`fsync` before acknowledging, plus `.tmp`/`.bak` atomic replacement.
+- **🧱 Journaled writes**; Host writes are cached in RAM (up to 512 KB / ~1 s) and committed in batches through an authenticated redo journal (then segments, maps and root) with `fsync`, plus `.tmp`/`.bak` atomic replacement. **Eject before unplugging**, or the last cached writes can be lost.
 - **🧪 Verifiable**; Host regression suite under AddressSanitizer/UBSan and a reproducible, isolated WSL target build.
 - **🚫 No buttons or touch**; Everything is driven over Wi-Fi and USB.
 
@@ -252,7 +252,7 @@ esp32-s3-encrypted-drive/
 
 ### 🧱 Reliability
 
-- **⚡ USB write throughput**; A verified 512 KB write currently takes ~40 s (~13 KB/s) because every 4 KB block does encrypt + redo-journal + `fsync` + segment + root update. Planned: batch/coalesce the journal, relax per-block `fsync` with a safe flush cadence, and/or larger write granularity; a durability-vs-speed trade-off made configurable.
+- **⚡ USB write throughput**; Writes are now cached and committed in batches (previously ~13 KB/s, one journaled block at a time). Still to do: measure on hardware, and make the cache size/idle-commit delay configurable.
 - **🧯 Power-loss hardening**; Move beyond backup-rename recovery toward a true transactional/journaled guarantee across arbitrary SD power loss, with stress tests around catalog, credential and volume-root replacement.
 - **🔁 In-web volume recovery**; A deliberate "reset/recreate USB volume" action so a stale or undecryptable header can never dead-end the drive without pulling the card.
 - **📏 Capacity reclaim/resize**; Grow or reclaim USB-drive capacity after deleting legacy files (currently fixed at creation time).

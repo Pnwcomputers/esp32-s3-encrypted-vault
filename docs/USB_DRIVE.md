@@ -19,9 +19,10 @@ USB CDC remains available as a second interface for status/legacy tooling.
    phone page. Automatic locking waits while the USB drive is exported, because
    Windows can retain filesystem writes in its cache. Read/write activity also
    counts as activity. Eject resumes the configured idle-lock behavior.
-5. Unlocking reconnects an existing volume. After eject, **Reconnect SD card
-   drive** makes the medium available again; Windows may require reconnecting
-   the USB cable if it removed the entire USB device.
+5. Unlocking never exposes the drive by itself: press **Enable SD card drive**
+   (or **Reconnect SD card drive** for an existing volume) each time. Until then
+   the host sees no medium. Windows may require reconnecting the USB cable if it
+   removed the entire USB device.
 
 While locked the MSC device reports no medium and rejects block reads/writes.
 It does not expose ciphertext as a mountable disk. Never accept a Windows format
@@ -47,14 +48,32 @@ the allocation map has a separate reserved block identity.
 Authenticated allocation maps distinguish an untouched block from a missing or
 corrupted stored block. Untouched blocks return the initial FAT32 contents;
 missing or corrupt allocated data returns an I/O error and closes the medium.
-Session keys, decrypted roots/maps and the one-block plaintext cache are erased
-on locking/eject. Credential rotation keeps the same data key, preserving drive
+Session keys, decrypted roots/maps and the plaintext caches are erased on
+locking/eject. Credential rotation keeps the same data key, preserving drive
 contents.
 
-Each write first commits an authenticated redo transaction to `usb-drive.txn`,
-then updates its segment data/map and volume root, then removes the journal.
-Writes flush and fsync before MSC reports success. A complete journal replays
-on the next unlock, including after an interrupted primary-header update.
+### Write cache
+
+Host writes land in a RAM write cache (128 × 4 KB blocks in PSRAM) and are
+acknowledged immediately. The cache is committed to the card when:
+
+- the host has not written for ~1 second,
+- the host sends SYNCHRONIZE CACHE or ejects the drive,
+- the vault is locked, or
+- the cache is full (that write waits for the commit).
+
+**Up to ~1 second of writes (at most 512 KB) are held in RAM before they reach the card. Pulling the stick (which also cuts its power) without ejecting can lose
+those writes**, the same as yanking an ordinary flash drive mid-copy. Always use
+**Eject** first. Data that was committed is never affected.
+
+### Journal
+
+Each commit first writes one authenticated redo transaction (`VLTTXN3`) to
+`usb-drive.txn` covering every cached block plus the updated allocation maps
+and volume root, fsyncs it, then updates the segment files (and the root only
+when a new segment was created), then removes the journal. A complete journal
+replays on the next unlock, including after an interrupted primary-header
+update. Single-block `VLTTXN2` journals left by older firmware still replay.
 Incomplete transaction `.tmp` files are not replayed. Corrupt committed
 transactions fail closed. No automatic reformat occurs on any read/auth error.
 
@@ -62,8 +81,8 @@ This improves logical write recovery; it does not guarantee the physical SD's
 FAT metadata or controller behavior across arbitrary power loss. The format has
 no anti-replay counter. Restoring an older valid card image can restore older
 data. Capacity is calculated at creation, not expanded automatically after
-deleting old phone/client files. Speed will be lower than a native SD reader
-because each host write includes encryption and durable journal updates.
+deleting old phone/client files. Speed is still lower than a native SD reader
+because every block is encrypted and each commit is journaled.
 
 ## USB integration
 

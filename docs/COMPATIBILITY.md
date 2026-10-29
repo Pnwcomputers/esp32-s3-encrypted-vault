@@ -44,8 +44,8 @@ Windows (`--python-only`) and Linux (full suite).
 
 ## Known issues
 
-- USB drive writes are slow (~13 KB/s measured for a 512 KB write) because every 4 KB
-  block is encrypted and journaled with `fsync`. See the README roadmap.
+- USB drive writes are cached in RAM for up to ~1 s; **eject before unplugging** or
+  the last writes can be lost. See [USB_DRIVE.md](USB_DRIVE.md#write-cache).
 - Windows may need the USB cable reconnected after eject before **Reconnect SD card
   drive** shows the volume again.
 - Drive capacity is fixed when the volume is created; it doesn't grow after old

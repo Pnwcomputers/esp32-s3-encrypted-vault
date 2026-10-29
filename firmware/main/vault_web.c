@@ -122,9 +122,11 @@ static esp_err_t api_status_handler(httpd_req_t *req) {
     bool unlocked = authenticated(req);
     bool prov = vault_storage_is_provisioned();
 
-    char resp[512];
+    const char *sd_error = vault_storage_unavailable_reason();
+    char resp[640];
     snprintf(resp, sizeof(resp),
-             "{\"provisioned\":%s,\"unlocked\":%s,\"total_mb\":%u,\"free_mb\":%u,\"used_mb\":%u,\"file_count\":%u,\"usb_drive_exists\":%s,\"usb_drive_ready\":%s,\"usb_drive_creating\":%s,\"usb_drive_mb\":%lu}",
+             "{\"sd_error\":%s%s%s,\"provisioned\":%s,\"unlocked\":%s,\"total_mb\":%u,\"free_mb\":%u,\"used_mb\":%u,\"file_count\":%u,\"usb_drive_exists\":%s,\"usb_drive_ready\":%s,\"usb_drive_creating\":%s,\"usb_drive_mb\":%lu}",
+             sd_error ? "\"" : "", sd_error ? sd_error : "null", sd_error ? "\"" : "",
              prov ? "true" : "false",
              unlocked ? "true" : "false",
              (unsigned int)total_mb, (unsigned int)free_mb, (unsigned int)used_mb, (unsigned int)file_count,
@@ -149,7 +151,7 @@ static esp_err_t api_unlock_handler(httpd_req_t *req) {
 
     bool creating = !vault_storage_is_provisioned();
     const char *validation_error = NULL;
-    if (!vault_storage_is_ready()) validation_error = "SD card unavailable";
+    if (!vault_storage_is_ready()) validation_error = vault_storage_unavailable_reason();
     else if (creating && (strlen(pin) < 6 || strlen(pin) > 63))
         validation_error = "New credential must contain 6–63 UTF-8 bytes";
     if (validation_error || esp_timer_get_time() < s_next_auth) {
@@ -169,7 +171,6 @@ static esp_err_t api_unlock_handler(httpd_req_t *req) {
     vault_secure_zero(buf, sizeof(buf));
     httpd_resp_set_type(req, "application/json");
     if (err == ESP_OK) {
-        vault_msc_on_unlock();
         s_failures = 0;
         uint8_t token[32];
         vault_crypto_random(token, sizeof(token));

@@ -10,7 +10,7 @@ No. The SoftAP and HTTP portal stay available while powered, including while loc
 **Yes — once unlocked.** After you unlock through the web portal and press **Enable SD card drive**, the ESP32 exposes the decrypted volume to the host as a FAT32 USB drive labeled **ESP32 VAULT** (e.g. drive `D:` on Windows). There is also a separate **USB CDC file-transfer protocol** (the Python CLI/GUI) for the older phone/client file area. Both require the vault to be unlocked over Wi-Fi first; while locked, the drive reports no medium.
 
 ### 🐢 Why is writing to the drive slow?
-Every 4 KB block is encrypted and committed through a durable redo journal with `fsync` before the write is acknowledged, so throughput is well below a native card reader (tens of KB/s). It's fine for documents and small files; large transfers are slow by design. Faster write batching is on the [roadmap](README.md#-roadmap-reliability--security).
+Every 4 KB block is encrypted, and writes are committed to the card through a durable redo journal. Writes are cached in RAM and committed in batches (after ~1 s idle, on eject or lock), so throughput is much better than one block at a time, but still below a native card reader. **Eject before unplugging**, or the last second of writes can be lost. See [USB drive behavior](docs/USB_DRIVE.md#write-cache).
 
 ### 🧩 "Enable SD card drive" says *"USB drive could not be opened."* What now?
 Make sure the vault is **unlocked**, USB access is enabled in Device settings, and the card has at least ~66 MB free (the FAT32 volume is built from free space at creation). Current firmware requires the board's **PSRAM** to be enabled — if you built older firmware with PSRAM off, the drive allocation fails; rebuild from this repo. The device never auto-formats the card.
@@ -28,4 +28,4 @@ A removed card holds only AES-256-GCM ciphertext, so files are not directly read
 **No.** This is a development build. No production security hardening (device-bound keys, HTTPS, Secure Boot/flash encryption, signed updates) or independent security review is done, and on-device durability testing is ongoing. Use disposable test data. See [`README.md`](README.md) and [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
 
 ### 📇 Why won't my 64 GB card mount?
-The firmware expects **FAT32**. Cards sold preformatted as exFAT need a FAT32 partition prepared separately (large cards often default to exFAT). The firmware never formats a failed mount, so an unsupported card simply reports as unavailable.
+The firmware expects **FAT32**. Cards sold preformatted as exFAT need a FAT32 partition prepared separately (large cards often default to exFAT). The firmware never formats a failed mount; instead the LCD and web portal tell you the card is exFAT (or NTFS, or unreadable) and to reformat it as FAT32. See [Troubleshooting](docs/TROUBLESHOOTING.md#sd-card-unavailable--card-not-detected).

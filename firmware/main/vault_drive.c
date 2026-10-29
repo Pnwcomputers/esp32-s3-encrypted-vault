@@ -25,6 +25,12 @@ extern bool vault_drive_test_stop(unsigned stage);
 #ifndef VAULT_DRIVE_MAX_SECTORS
 #define VAULT_DRIVE_MAX_SECTORS 0xfffff800U
 #endif
+/* Dirty 4 KB blocks held in RAM (PSRAM) and committed together under one
+ * batch journal; a flush writes at most this many data records. */
+#ifndef VAULT_DRIVE_CACHE_BLOCKS
+#define VAULT_DRIVE_CACHE_BLOCKS 128U
+#endif
+#define FALLBACK_CACHE_BLOCKS 4U
 /* All persistent structures use the ESP32/little-endian layout, versioned by
  * their magic. Every block, allocation map and root is authenticated separately. */
 typedef struct __attribute__((packed)) {
@@ -44,12 +50,29 @@ typedef struct __attribute__((packed)) {
     uint8_t magic[8], uuid[16];uint32_t segment, block, new_segment;
     uint8_t iv[12], tag[16];
 } journal_header_t;
+/* Batch journal (VLTTXN3): prefix, iv, tag, entry table, one record per
+ * entry, then the root record. The tag authenticates the prefix and table;
+ * each record is authenticated by its own segment/block AAD. Entries are
+ * grouped by ascending segment: a map entry (block UINT32_MAX) followed by
+ * that segment's data entries in ascending block order. */
+typedef struct __attribute__((packed)) {
+    uint8_t magic[8], uuid[16];uint32_t count, reserved;
+} batch_prefix_t;
+typedef struct __attribute__((packed)) {
+    uint32_t segment, block, new_segment;
+} entry_t;
 _Static_assert(sizeof(root_plain_t)==ROOT_BYTES,"Root layout changed");
 static struct {
     root_plain_t root;
     root_record_t root_record;
     record_t data_record, map_record;
     uint8_t map[BLOCK_BYTES], plain[BLOCK_BYTES];
+    uint32_t cap, dirty_count, read_segment;
+    uint32_t *dirty_block;
+    uint16_t *order;
+    uint8_t *dirty_plain, *batch; /* batch: prefix followed by the entry table */
+    record_t *records;
+    FILE *reader;
 } *s;
 static uint8_t s_key[32];
 static bool s_ready,s_creating,s_cached,s_map_cached;
@@ -63,11 +86,21 @@ bool vault_drive_ready(void) { return s_ready; }
 bool vault_drive_creating(void) { return s_creating; }
 unsigned vault_drive_progress(void) { return s_ready?100:0; }
 uint32_t vault_drive_sector_count(void) { return s && (s_ready||s_creating)?s->root.sectors:0; }
-void vault_drive_close(void) {
+static void close_reader(void) { if(s && s->reader) { fclose(s->reader);s->reader=NULL; } }
+static void release(void *p,size_t n) { if(p) { vault_secure_zero(p,n);free(p); } }
+static size_t batch_bytes(uint32_t cap) { return sizeof(batch_prefix_t)+2*cap*sizeof(entry_t); }
+/* Frees everything, discarding any unflushed blocks; used on failure paths. */
+static void drop(void) {
     s_ready=s_creating=s_cached=s_map_cached=false;
     vault_secure_zero(s_key,sizeof(s_key));
-    if(s) { vault_secure_zero(s,sizeof(*s));free(s);s=NULL; }
+    if(s) {
+        close_reader();
+        release(s->dirty_plain,(size_t)s->cap*BLOCK_BYTES);release(s->records,2*(size_t)s->cap*sizeof(record_t));
+        release(s->batch,batch_bytes(s->cap));free(s->dirty_block);free(s->order);
+        vault_secure_zero(s,sizeof(*s));free(s);s=NULL;
+    }
 }
+bool vault_drive_dirty(void) { return s && s->dirty_count; }
 static bool finish(FILE *fp,bool ok) {
     if(fflush(fp)!=0) ok=false;
     if(fsync(fileno(fp))!=0) ok=false;
@@ -140,6 +173,70 @@ static bool apply_journal(void) {
     if(unlink(JOURNAL)!=0)return false;
     s_cached=s_map_cached=false;return true;
 }
+static entry_t *table(void) { return (entry_t*)(s->batch+sizeof(batch_prefix_t)); }
+static esp_err_t batch_tag(bool encrypt,const uint8_t iv[12],uint8_t tag[16],uint32_t count) {
+    size_t n=sizeof(batch_prefix_t)+count*sizeof(entry_t);
+    if(encrypt) return vault_crypto_aes_gcm_encrypt(s_key,iv,12,s->batch,n,NULL,0,NULL,tag,16);
+    return vault_crypto_aes_gcm_decrypt(s_key,iv,12,s->batch,n,NULL,0,tag,16,NULL);
+}
+/* Writes a validated batch into the segment files, then the root. Replay is
+ * idempotent, so a crash anywhere here is repaired by the next open. */
+static bool apply_batch(uint32_t count,bool write_root) {
+    entry_t *t=table();
+    for(uint32_t i=0;i<count;) {
+        char path[160];segment_path(path,sizeof(path),t[i].segment);
+        FILE *fp=fopen(path,"r+b");
+        if(!fp && t[i].new_segment) fp=fopen(path,"w+b");
+        if(!fp)return false;
+        bool ok=fseek(fp,0,SEEK_SET)==0 && fwrite(&s->records[i],1,sizeof(record_t),fp)==sizeof(record_t);
+        for(i++;i<count && t[i].block!=UINT32_MAX;i++)
+            ok=ok && fseek(fp,(long)(t[i].block+1)*sizeof(record_t),SEEK_SET)==0 &&
+               fwrite(&s->records[i],1,sizeof(record_t),fp)==sizeof(record_t);
+        if(!finish(fp,ok))return false;
+    }
+    if(vault_drive_test_stop(2) || (write_root && !save_root()) || vault_drive_test_stop(3))return false;
+    return unlink(JOURNAL)==0;
+}
+static bool replay_batch(FILE *fp,uint32_t *out_count) {
+    batch_prefix_t *p=(batch_prefix_t*)s->batch;entry_t *t=table();uint8_t iv[12],tag[16];
+    if(fread(p,1,sizeof(*p),fp)!=sizeof(*p) || fread(iv,1,12,fp)!=12 || fread(tag,1,16,fp)!=16 ||
+       memcmp(p->magic,"VLTTXN3",8) || !p->count || p->count>2*s->cap) return false;
+    uint32_t n=p->count;
+    if(fread(t,sizeof(entry_t),n,fp)!=n || fread(s->records,sizeof(record_t),n,fp)!=n ||
+       fread(&s->root_record,1,sizeof(s->root_record),fp)!=sizeof(s->root_record) || fgetc(fp)!=EOF ||
+       batch_tag(false,iv,tag,n)!=ESP_OK || crypt_root(false)!=ESP_OK || !valid_root() ||
+       memcmp(p->uuid,s->root_record.uuid,16)) return false;
+    uint64_t blocks=(uint64_t)s->root.sectors/8;
+    for(uint32_t i=0;i<n;) {
+        uint32_t seg=t[i].segment,used=0;
+        if(t[i].block!=UINT32_MAX || t[i].new_segment>1 || (i && seg<=t[i-1].segment) ||
+           (uint64_t)seg*SEGMENT_BLOCKS>=blocks || !bit(s->root.created,seg) ||
+           crypt_record(false,seg,UINT32_MAX,&s->records[i],s->map)!=ESP_OK) return false;
+        bool fresh=t[i].new_segment;
+        for(i++;i<n && t[i].block!=UINT32_MAX;i++,used++) {
+            entry_t *d=&t[i];
+            if(d->segment!=seg || d->new_segment || d->block>=SEGMENT_BLOCKS || (used && d->block<=d[-1].block) ||
+               (uint64_t)seg*SEGMENT_BLOCKS+d->block>=blocks || !bit(s->map,d->block) ||
+               crypt_record(false,seg,d->block,&s->records[i],s->plain)!=ESP_OK) return false;
+        }
+        if(!used)return false;
+        if(fresh) { /* A new segment's map may only name blocks in this batch. */
+            uint32_t bits=0;for(uint32_t b=0;b<SEGMENT_BLOCKS;b++)bits+=bit(s->map,b);
+            if(bits!=used)return false;
+        }
+    }
+    *out_count=n;return true;
+}
+static bool replay_journal(void) {
+    FILE *fp=fopen(JOURNAL,"rb");if(!fp)return false;
+    uint8_t magic[8];
+    bool batch=fread(magic,1,8,fp)==8 && !memcmp(magic,"VLTTXN3",8);
+    uint32_t count=0;bool ok=batch && fseek(fp,0,SEEK_SET)==0 && replay_batch(fp,&count);
+    if(fclose(fp)!=0)ok=false;
+    if(!batch)return apply_journal(); /* VLTTXN2 journal from older firmware */
+    s_cached=s_map_cached=false;
+    return ok && apply_batch(count,true);
+}
 static void put16(uint8_t *p,uint16_t v) { p[0]=v;p[1]=v>>8; }
 static void put32(uint8_t *p,uint32_t v) { put16(p,v);put16(p+2,v>>16); }
 /* Lazy initial FAT32 contents are deterministic. Authenticated allocation maps
@@ -165,6 +262,13 @@ static void initial_block(uint32_t block,uint8_t *p) {
         } else if(sector==data_start) { memcpy(b,"ESP32 VAULT",11);b[11]=8; }
     }
 }
+static void *big_calloc(size_t n) {
+#ifdef ESP_PLATFORM
+    return heap_caps_calloc(1,n,MALLOC_CAP_SPIRAM);
+#else
+    return calloc(1,n);
+#endif
+}
 esp_err_t vault_drive_open(const uint8_t key[32],bool create) {
     if(!key || s || (create && vault_drive_exists())) return ESP_ERR_INVALID_STATE;
     /* Allocate the ~32 KB working set at runtime, preferring the 8 MB PSRAM so it
@@ -180,6 +284,20 @@ esp_err_t vault_drive_open(const uint8_t key[32],bool create) {
 #endif
     if(!s) {
         return ESP_ERR_NO_MEM;
+    }
+    /* The write cache and batch buffers (~1.6 MB) need PSRAM; without it a
+     * small internal-RAM cache still works, just with smaller batches. */
+    for(uint32_t cap=VAULT_DRIVE_CACHE_BLOCKS;;cap=FALLBACK_CACHE_BLOCKS) {
+        s->cap=cap;
+        s->dirty_plain=big_calloc((size_t)cap*BLOCK_BYTES);
+        s->records=big_calloc(2*(size_t)cap*sizeof(record_t));
+        s->batch=big_calloc(batch_bytes(cap));
+        s->dirty_block=calloc(cap,sizeof(uint32_t));s->order=calloc(cap,sizeof(uint16_t));
+        if(s->dirty_plain && s->records && s->batch && s->dirty_block && s->order)break;
+        release(s->dirty_plain,(size_t)cap*BLOCK_BYTES);release(s->records,2*(size_t)cap*sizeof(record_t));
+        release(s->batch,batch_bytes(cap));free(s->dirty_block);free(s->order);
+        s->dirty_plain=s->batch=NULL;s->records=NULL;s->dirty_block=NULL;s->order=NULL;
+        if(cap==FALLBACK_CACHE_BLOCKS) { drop();return ESP_ERR_NO_MEM; }
     }
     memcpy(s_key,key,32);
     if(create) {
@@ -200,7 +318,7 @@ esp_err_t vault_drive_open(const uint8_t key[32],bool create) {
         if(!valid_root())goto fail;
         s_creating=true;return ESP_OK;
     }
-    if(exists(JOURNAL) && !apply_journal())goto fail;
+    if(exists(JOURNAL) && !replay_journal())goto fail;
     if(!exists(ROOT))rename(ROOT ".bak",ROOT);
     FILE *fp=fopen(ROOT,"rb");if(!fp)goto fail;
     bool ok=fread(&s->root_record,1,sizeof(s->root_record),fp)==sizeof(s->root_record) && fgetc(fp)==EOF;
@@ -208,53 +326,100 @@ esp_err_t vault_drive_open(const uint8_t key[32],bool create) {
     if(!ok || crypt_root(false)!=ESP_OK || !valid_root())goto fail;
     s_ready=true;return ESP_OK;
 fail:
-    vault_drive_close();return ESP_FAIL;
+    drop();return ESP_FAIL;
 }
 esp_err_t vault_drive_create_step(void) {
     if(!s_creating || !s)return ESP_ERR_INVALID_STATE;
-    if(crypt_root(true)!=ESP_OK || !save_root()) { vault_drive_close();return ESP_FAIL; }
+    if(crypt_root(true)!=ESP_OK || !save_root()) { drop();return ESP_FAIL; }
     s_creating=false;s_ready=true;return ESP_OK;
+}
+/* One read handle stays open on the current segment so sequential reads seek
+ * forward instead of reopening the file and walking its FAT chain each time. */
+static FILE *segment_reader(uint32_t seg) {
+    if(s->reader && s->read_segment==seg)return s->reader;
+    close_reader();
+    char path[160];segment_path(path,sizeof(path),seg);
+    s->reader=fopen(path,"rb");s->read_segment=seg;return s->reader;
 }
 static esp_err_t load_block(uint32_t block) {
     if(s_cached && s_cache_block==block)return ESP_OK;
     s_cached=false;uint32_t seg=block/SEGMENT_BLOCKS,within=block%SEGMENT_BLOCKS;
-    char path[160];segment_path(path,sizeof(path),seg);
     if(!s_map_cached || s_map_segment!=seg) {
         s_map_cached=false;
         if(bit(s->root.created,seg)) {
-            FILE *fp=fopen(path,"rb");if(!fp)return ESP_FAIL;
-            bool ok=fread(&s->map_record,1,sizeof(s->map_record),fp)==sizeof(s->map_record);
-            if(fclose(fp)!=0)ok=false;
-            if(!ok || crypt_record(false,seg,UINT32_MAX,&s->map_record,s->map)!=ESP_OK)return ESP_FAIL;
+            FILE *fp=segment_reader(seg);
+            if(!fp || fseek(fp,0,SEEK_SET)!=0 || fread(&s->map_record,1,sizeof(s->map_record),fp)!=sizeof(s->map_record) ||
+               crypt_record(false,seg,UINT32_MAX,&s->map_record,s->map)!=ESP_OK)return ESP_FAIL;
         } else memset(s->map,0,sizeof(s->map));
         s_map_segment=seg;s_map_cached=true;
     }
     if(bit(s->map,within)) {
-        FILE *fp=fopen(path,"rb");if(!fp)return ESP_FAIL;
-        bool ok=fseek(fp,(long)(within+1)*sizeof(record_t),SEEK_SET)==0 &&
-            fread(&s->data_record,1,sizeof(s->data_record),fp)==sizeof(s->data_record);
-        if(fclose(fp)!=0)ok=false;
-        if(!ok || crypt_record(false,seg,within,&s->data_record,s->plain)!=ESP_OK)return ESP_FAIL;
+        FILE *fp=segment_reader(seg);
+        if(!fp || fseek(fp,(long)(within+1)*sizeof(record_t),SEEK_SET)!=0 ||
+           fread(&s->data_record,1,sizeof(s->data_record),fp)!=sizeof(s->data_record) ||
+           crypt_record(false,seg,within,&s->data_record,s->plain)!=ESP_OK)return ESP_FAIL;
     } else initial_block(block,s->plain);
     s_cache_block=block;s_cached=true;return ESP_OK;
 }
-static esp_err_t write_block(uint32_t block) {
-    uint32_t seg=block/SEGMENT_BLOCKS,within=block%SEGMENT_BLOCKS;
-    journal_header_t h={.magic={'V','L','T','T','X','N','2',0},.segment=seg,.block=within,.new_segment=!bit(s->root.created,seg)};
-    memcpy(h.uuid,s->root_record.uuid,16);vault_crypto_random(h.iv,12);
-    setbit(s->map,within);setbit(s->root.created,seg);
-    if(crypt_record(true,seg,within,&s->data_record,s->plain)!=ESP_OK ||
-       crypt_record(true,seg,UINT32_MAX,&s->map_record,s->map)!=ESP_OK || crypt_root(true)!=ESP_OK ||
-       vault_crypto_aes_gcm_encrypt(s_key,h.iv,12,(uint8_t*)&h,36,NULL,0,NULL,h.tag,16)!=ESP_OK)goto fail;
-    FILE *fp=fopen(JOURNAL ".tmp","wb");if(!fp)goto fail;
-    bool ok=fwrite(&h,1,sizeof(h),fp)==sizeof(h) &&
-        fwrite(&s->data_record,1,sizeof(s->data_record),fp)==sizeof(s->data_record) &&
-        fwrite(&s->map_record,1,sizeof(s->map_record),fp)==sizeof(s->map_record) &&
+/* Commits every cached block: encrypt records and updated maps, write one
+ * durable batch journal, then apply it. Callers hold the runtime gate. */
+static esp_err_t flush_dirty(void) {
+    uint32_t n=s->dirty_count;
+    if(!n)return ESP_OK;
+    close_reader();s_cached=s_map_cached=false;
+    for(uint32_t i=0;i<n;i++) { /* insertion sort of slots by block number */
+        uint16_t v=i;uint32_t j=i;
+        while(j && s->dirty_block[s->order[j-1]]>s->dirty_block[v]) { s->order[j]=s->order[j-1];j--; }
+        s->order[j]=v;
+    }
+    entry_t *t=table();uint32_t count=0;bool root_changed=false;
+    for(uint32_t i=0;i<n;) {
+        uint32_t seg=s->dirty_block[s->order[i]]/SEGMENT_BLOCKS,map_entry=count++;
+        bool fresh=!bit(s->root.created,seg);
+        record_t *map_record=&s->records[map_entry];
+        if(fresh) memset(s->map,0,sizeof(s->map));
+        else {
+            FILE *fp=segment_reader(seg);
+            bool ok=fp && fseek(fp,0,SEEK_SET)==0 && fread(map_record,1,sizeof(*map_record),fp)==sizeof(*map_record) &&
+                crypt_record(false,seg,UINT32_MAX,map_record,s->map)==ESP_OK;
+            close_reader();
+            if(!ok)return ESP_FAIL;
+        }
+        for(;i<n && s->dirty_block[s->order[i]]/SEGMENT_BLOCKS==seg;i++) {
+            uint16_t slot=s->order[i];uint32_t within=s->dirty_block[slot]%SEGMENT_BLOCKS;
+            setbit(s->map,within);t[count]=(entry_t){seg,within,0};
+            if(crypt_record(true,seg,within,&s->records[count++],s->dirty_plain+(size_t)slot*BLOCK_BYTES)!=ESP_OK)return ESP_FAIL;
+        }
+        t[map_entry]=(entry_t){seg,UINT32_MAX,fresh};
+        if(crypt_record(true,seg,UINT32_MAX,map_record,s->map)!=ESP_OK)return ESP_FAIL;
+        if(fresh) { setbit(s->root.created,seg);root_changed=true; }
+    }
+    batch_prefix_t *p=(batch_prefix_t*)s->batch;uint8_t iv[12],tag[16];
+    memcpy(p->magic,"VLTTXN3",8);memcpy(p->uuid,s->root_record.uuid,16);p->count=count;p->reserved=0;
+    vault_crypto_random(iv,12);
+    if((root_changed && crypt_root(true)!=ESP_OK) || batch_tag(true,iv,tag,count)!=ESP_OK)return ESP_FAIL;
+    FILE *fp=fopen(JOURNAL ".tmp","wb");if(!fp)return ESP_FAIL;
+    bool ok=fwrite(p,1,sizeof(*p),fp)==sizeof(*p) && fwrite(iv,1,12,fp)==12 && fwrite(tag,1,16,fp)==16 &&
+        fwrite(t,sizeof(entry_t),count,fp)==count && fwrite(s->records,sizeof(record_t),count,fp)==count &&
         fwrite(&s->root_record,1,sizeof(s->root_record),fp)==sizeof(s->root_record);
-    if(!finish(fp,ok) || rename(JOURNAL ".tmp",JOURNAL)!=0 || vault_drive_test_stop(1) || !apply_journal())goto fail;
+    if(!finish(fp,ok) || rename(JOURNAL ".tmp",JOURNAL)!=0 || vault_drive_test_stop(1) || !apply_batch(count,root_changed))
+        return ESP_FAIL;
+    vault_secure_zero(s->dirty_plain,(size_t)n*BLOCK_BYTES);s->dirty_count=0;
     return ESP_OK;
-fail:
-    vault_drive_close();return ESP_FAIL;
+}
+esp_err_t vault_drive_flush(void) {
+    if(!s_ready || !s)return ESP_ERR_INVALID_STATE;
+    if(flush_dirty()!=ESP_OK) { drop();return ESP_FAIL; }
+    return ESP_OK;
+}
+/* Flushes cached writes first; a drive that cannot flush is still closed. */
+void vault_drive_close(void) {
+    if(s_ready && s && s->dirty_count) (void)flush_dirty();
+    drop();
+}
+static uint8_t *cached_block(uint32_t block) {
+    for(uint32_t i=0;i<s->dirty_count;i++) if(s->dirty_block[i]==block)return s->dirty_plain+(size_t)i*BLOCK_BYTES;
+    return NULL;
 }
 static esp_err_t transfer(uint64_t offset,void *data,size_t size,bool write) {
     if(!s_ready || !s)return ESP_ERR_INVALID_STATE;
@@ -263,11 +428,23 @@ static esp_err_t transfer(uint64_t offset,void *data,size_t size,bool write) {
     uint8_t *p=data;
     while(size) {
         uint32_t block=offset/BLOCK_BYTES;size_t within=offset%BLOCK_BYTES,n=BLOCK_BYTES-within;if(n>size)n=size;
-        if(load_block(block)!=ESP_OK) { vault_drive_close();return ESP_FAIL; }
+        uint8_t *cached=cached_block(block);
         if(write) {
-            memcpy(s->plain+within,p,n);
-            if(write_block(block)!=ESP_OK)return ESP_FAIL;
-        } else memcpy(p,s->plain+within,n);
+            if(!cached) {
+                /* A full cache is committed synchronously: USB back-pressure. */
+                if(s->dirty_count==s->cap && flush_dirty()!=ESP_OK) { drop();return ESP_FAIL; }
+                if(n<BLOCK_BYTES && load_block(block)!=ESP_OK) { vault_drive_close();return ESP_FAIL; }
+                uint32_t slot=s->dirty_count++;
+                s->dirty_block[slot]=block;cached=s->dirty_plain+(size_t)slot*BLOCK_BYTES;
+                if(n<BLOCK_BYTES) memcpy(cached,s->plain,BLOCK_BYTES);
+            }
+            memcpy(cached+within,p,n);
+            if(s_cached && s_cache_block==block)s_cached=false;
+        } else if(cached) memcpy(p,cached+within,n);
+        else {
+            if(load_block(block)!=ESP_OK) { vault_drive_close();return ESP_FAIL; }
+            memcpy(p,s->plain+within,n);
+        }
         offset+=n;p+=n;size-=n;
     }
     return ESP_OK;

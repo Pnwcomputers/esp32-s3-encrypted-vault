@@ -8,7 +8,7 @@ The primary control surface is the device's persistent WPA2 SoftAP and HTTP page
 - PBKDF2-HMAC-SHA256 with the existing 10,000-round format derives the key used to wrap the data key. Wrong credentials fail GCM authentication.
 - Web protected endpoints require a random page session token. Settings and credential changes also require the existing credential. Unlock and credential failures incur a bounded RAM-only retry delay.
 - USB file commands require the device's global unlocked state. There is no USB unlock command. HTTP operations, USB commands and automatic locking serialize storage access.
-- USB Mass Storage exposes an encrypted SD-backed FAT32 volume only while unlocked. Authenticated roots/maps/blocks bind volume and address; a redo journal protects logical updates. Legacy mutations are blocked while exported. Automatic locking waits until host eject; manual locking/settings changes also require eject. See USB_DRIVE.md.
+- USB Mass Storage exposes an encrypted SD-backed FAT32 volume only while unlocked. Authenticated roots/maps/blocks bind volume and address; a redo journal protects logical updates once committed; up to ~1 s of acknowledged writes live only in RAM until the next commit, so removal without eject can lose them. Legacy mutations are blocked while exported. Automatic locking waits until host eject; manual locking/settings changes also require eject. See USB_DRIVE.md.
 - Locking erases the active data key and clears the in-memory catalog, closes transfers and removes the current upload temporary file. Browser status requests do not postpone idle locking.
 
 ## Limits and deferred goals

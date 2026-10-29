@@ -49,7 +49,7 @@ with tempfile.TemporaryDirectory() as temp:
     disk_target = Path(temp)/'drive-test'
     subprocess.run(['gcc', '-std=gnu11', '-g', '-fsanitize=address,undefined',
         '-Werror=implicit-function-declaration', '-I'+str(host/'include'), '-I'+str(main),
-        '-DVAULT_DRIVE_MAX_SECTORS=262144', '-DVAULT_DRIVE_TEST',
+        '-DVAULT_DRIVE_MAX_SECTORS=262144', '-DVAULT_DRIVE_TEST', '-DVAULT_DRIVE_CACHE_BLOCKS=8',
         '-DVAULT_MOUNT_POINT="'+str(disk_root)+'"', str(host/'test_drive.c'),
         str(host/'support.c'), str(main/'vault_storage.c'), str(main/'vault_config.c'),
         str(main/'vault_runtime.c'), str(main/'vault_msc.c'),

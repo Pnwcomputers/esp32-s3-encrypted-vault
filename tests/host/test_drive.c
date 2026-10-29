@@ -35,6 +35,20 @@ int main(void) {
     assert(fclose(image)==0);
     assert(vault_drive_write(4096*100+511,data,sizeof(data))==ESP_OK);
     assert(vault_drive_read(4096*100+511,out,sizeof(out))==ESP_OK && !memcmp(data,out,sizeof(data)));
+    /* More dirty blocks than the cache holds: synchronous batch flushes, a new
+     * segment mid-stream, then everything survives lock/unlock. */
+    uint8_t block[4096];
+    for(uint32_t b=0;b<3*VAULT_DRIVE_CACHE_BLOCKS;b++) {
+        memset(block,(int)(b*7+1),sizeof(block));
+        assert(vault_drive_write(((uint64_t)SEGMENT_BLOCKS-VAULT_DRIVE_CACHE_BLOCKS+b)*4096,block,sizeof(block))==ESP_OK);
+    }
+    assert(vault_drive_dirty());
+    vault_storage_lock();assert(!exists(JOURNAL) && !exists(JOURNAL ".tmp"));
+    assert(vault_storage_unlock("123456")==ESP_OK && vault_storage_drive_open(false)==ESP_OK && !vault_drive_dirty());
+    for(uint32_t b=0;b<3*VAULT_DRIVE_CACHE_BLOCKS;b++) {
+        assert(vault_drive_read(((uint64_t)SEGMENT_BLOCKS-VAULT_DRIVE_CACHE_BLOCKS+b)*4096,block,sizeof(block))==ESP_OK);
+        for(unsigned j=0;j<sizeof(block);j++) assert(block[j]==(uint8_t)(b*7+1));
+    }
     /* Cross a backing-file boundary, and preserve it across lock/unlock. */
     uint64_t boundary=(uint64_t)SEGMENT_BLOCKS*4096-100;
     assert(vault_drive_write(boundary,data,512)==ESP_OK);
@@ -47,7 +61,8 @@ int main(void) {
      * Each new unlock must replay and recover the acknowledged-intent data. */
     for(unsigned stage=1;stage<=3;stage++) {
         stop_at=stage;data[0]=stage;
-        assert(vault_drive_write(4096*100,data,512)!=ESP_OK && !vault_drive_ready());
+        assert(vault_drive_write(4096*100,data,512)==ESP_OK && vault_drive_dirty());
+        assert(vault_drive_flush()!=ESP_OK && !vault_drive_ready());
         if(stage==1) { /* Also recover a missing/truncated primary header. */
             FILE *bad=fopen(ROOT,"wb");assert(bad);fclose(bad);
         }
@@ -81,8 +96,15 @@ int main(void) {
     vault_runtime_poll();assert(!vault_storage_is_unlocked());
     assert(tud_msc_read10_cb(0,0,0,out,512)<0 && !tud_msc_is_writable_cb(0));
     tud_msc_capacity_cb(0,&count,&size);assert(count==0);
-    assert(vault_storage_unlock("123456")==ESP_OK);vault_msc_on_unlock();
+    /* Unlocking alone never exports the drive; only an explicit connect does. */
+    assert(vault_storage_unlock("123456")==ESP_OK);
+    assert(!tud_msc_test_unit_ready_cb(0) && !vault_msc_exported());
+    assert(vault_msc_connect()==ESP_OK);
     assert(!tud_msc_test_unit_ready_cb(0));assert(tud_msc_test_unit_ready_cb(0));
+    /* SYNCHRONIZE CACHE commits cached writes. */
+    const uint8_t sync_cmd[16]={0x35};
+    assert(tud_msc_write10_cb(0,901,0,data,512)==512 && vault_drive_dirty());
+    assert(tud_msc_scsi_cb(0,sync_cmd,NULL,0)==0 && !vault_drive_dirty());
     assert(tud_msc_start_stop_cb(0,0,false,true));
     assert(vault_storage_change_pin("123456","abcdef")==ESP_OK);
     vault_storage_lock();assert(vault_storage_unlock("abcdef")==ESP_OK && vault_storage_drive_open(false)==ESP_OK);

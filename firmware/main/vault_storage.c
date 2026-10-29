@@ -16,8 +16,11 @@ static const char *TAG = "vault_storage";
 static uint8_t s_vault_dek[VAULT_KEY_SIZE];
 static bool s_vault_unlocked = false;
 static bool s_ready = false;
+static const char *s_unavailable_reason = "SD card unavailable";
 void vault_storage_set_ready(bool ready) { s_ready = ready; }
 bool vault_storage_is_ready(void) { return s_ready; }
+void vault_storage_set_unavailable_reason(const char *reason) { if (reason) s_unavailable_reason = reason; }
+const char *vault_storage_unavailable_reason(void) { return s_ready ? NULL : s_unavailable_reason; }
 
 static vault_file_record_t s_index_records[VAULT_MAX_FILES];
 static size_t s_index_count = 0;
