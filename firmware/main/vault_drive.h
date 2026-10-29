@@ -11,6 +11,8 @@ esp_err_t vault_drive_create_step(void);
 /* Writes are cached in RAM; flush commits them durably. Close flushes first. */
 esp_err_t vault_drive_flush(void);
 bool vault_drive_dirty(void);
+/* Last storage failure stage, retained across close for troubleshooting. */
+const char *vault_drive_last_error(void);
 void vault_drive_close(void);
 bool vault_drive_ready(void);
 bool vault_drive_creating(void);

@@ -13,6 +13,12 @@ static void flip(const char *path,long pos) {
     int c=fgetc(fp);assert(c!=EOF);assert(fseek(fp,pos,SEEK_SET)==0);assert(fputc(c^1,fp)!=EOF);assert(fclose(fp)==0);
 }
 int main(void) {
+    assert(initial_cluster_sectors(262144)==1);
+    assert(initial_cluster_sectors(1048576)==8);
+    assert(initial_cluster_sectors(8388607)==8);
+    assert(initial_cluster_sectors(8388608)==64);
+    assert(initial_cluster_sectors(121376768)==64);
+    assert(initial_cluster_sectors(242753536)==64);
     assert(vault_runtime_init()==ESP_OK && vault_config_init()==ESP_OK && vault_storage_init()==ESP_OK);
     assert(vault_storage_create("123456")==ESP_OK);
     assert(vault_storage_drive_open(true)==ESP_OK && vault_drive_creating());
@@ -76,12 +82,15 @@ int main(void) {
     vault_drive_close();flip(path,tag_offset);
     assert(vault_storage_drive_open(false)==ESP_OK);
     assert(vault_drive_read(4096*100,out,512)!=ESP_OK && !vault_drive_ready());
+    assert(!strcmp(vault_drive_last_error(),"data_auth"));
     flip(path,tag_offset);assert(vault_storage_drive_open(false)==ESP_OK);
     vault_drive_close();flip(path,12);
     assert(vault_storage_drive_open(false)==ESP_OK && vault_drive_read(4096*100,out,512)!=ESP_OK);
+    assert(!strcmp(vault_drive_last_error(),"map_auth"));
     flip(path,12);assert(vault_storage_drive_open(false)==ESP_OK);
     vault_drive_close();assert(rename(path,VAULT_DIR "/segment.saved")==0);
     assert(vault_storage_drive_open(false)==ESP_OK && vault_drive_read(4096*100,out,512)!=ESP_OK);
+    assert(!strcmp(vault_drive_last_error(),"map_io"));
     assert(rename(VAULT_DIR "/segment.saved",path)==0);
     assert(vault_storage_drive_open(false)==ESP_OK);
     /* Actual MSC callbacks: capacity, ranges, lock gating, eject and idle lock. */

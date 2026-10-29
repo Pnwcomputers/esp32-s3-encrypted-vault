@@ -16,9 +16,12 @@
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 ![Release](https://img.shields.io/github/v/release/Pnwcomputers/esp32-s3-encrypted-drive)
 
-### **A $100 +/- encrypted USB drive you build yourself: an ESP32-S3 stick plus any microSD card, unlocked from your phone**
+### **A ~$100 +/- Encrypted USB Drive You Build Yourself: Using an ESP32-S3 and a microSD Card, Unlocked From a Local Web Portal!!**
 
-Hardware-encrypted flash drives typically cost **$150–$250 for just 64 GB**. This project does the same basic job with about **$25 of parts**: a ~$13 ESP32-S3 USB stick and an ordinary microSD card. Need more space? Swap in a bigger card. The firmware is open source (MIT), so you can read exactly how your data is protected.
+Hardware-encrypted flash drives typically cost **$150–$250 for just 64 GB**. This project does the same basic job with about **~$100 +/- in parts**: a ~$25 ESP32-S3 USB stick and an ordinary microSD card of your choice. 
+Need more space? 
+Swap in a bigger card. 
+The firmware is open source (MIT), so you can read exactly how your data is protected.
 
 Development firmware for the [**Waveshare ESP32-S3-LCD-1.47**](https://a.co/d/0b47s5Qs) (specifically the USB-A thumb-drive form factor) that turns a plain microSD card into an encrypted vault. The card holds only AES-256-GCM ciphertext. The device hosts its own Wi-Fi access point and web portal; after you unlock there, the ESP32 exposes the decrypted volume to the host computer as a real USB drive, decrypting and encrypting every block on the fly. No router, no internet, no buttons, no touch input.
 
@@ -32,7 +35,7 @@ Commercial encrypted USB drives work well, but they're expensive, their capacity
 
 | | **This project** | Typical hardware-encrypted flash drive |
 |---|---|---|
-| **Cost (64 GB)** | **~$25** (board ~$13 + microSD card) | ~$150–$250 |
+| **Cost Estimate(s)** | **$25** ESP32-S3 LCD + microSD Card | $150 - $250 +/- |
 | **Bigger capacity** | Buy a bigger microSD card | Buy a new, pricier drive |
 | **Encryption** | AES-256-GCM, done on the ESP32 | AES-256 (usually XTS), done in the drive |
 | **Unlock** | Phone/browser over the device's own Wi-Fi | Physical keypad on the drive |

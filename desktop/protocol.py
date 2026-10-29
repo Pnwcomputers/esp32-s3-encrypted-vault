@@ -49,6 +49,7 @@ def decode_frame(data: bytes) -> Frame:
     return Frame(command=command, request_id=request_id, payload=payload)
 
 CMD_GET_STATUS = 0x01
+CMD_GET_USB_DIAGNOSTICS = 0x02
 CMD_LIST_FILES = 0x10
 CMD_UPLOAD_BEGIN, CMD_UPLOAD_CHUNK, CMD_UPLOAD_COMMIT = 0x20, 0x21, 0x22
 CMD_DOWNLOAD_BEGIN, CMD_DOWNLOAD_CHUNK, CMD_DOWNLOAD_END = 0x30, 0x31, 0x32

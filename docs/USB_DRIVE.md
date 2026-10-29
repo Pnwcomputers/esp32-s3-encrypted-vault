@@ -15,6 +15,9 @@ USB CDC remains available as a second interface for status/legacy tooling.
 3. Open **ESP32 VAULT** in File Explorer and use normal file/folder operations.
    The host sees plaintext while unlocked; the SD backing files are encrypted.
    FAT32 limits an individual file to less than 4 GiB.
+   Newly created volumes of at least 4 GiB use 32 KiB clusters to reduce FAT
+   size and Windows mount-time reads. Older volumes keep their stored geometry;
+   updating firmware does not convert an existing 4 KiB-cluster volume.
 4. Right-click the drive in Windows and choose **Eject**, then lock through the
    phone page. Automatic locking waits while the USB drive is exported, because
    Windows can retain filesystem writes in its cache. Read/write activity also
@@ -96,6 +99,19 @@ Capture these logs while enabling the drive and opening it in Explorer when
 investigating mount stalls. Flush messages report elapsed time and result;
 they do not include time waiting for the runtime gate. These messages contain
 no file contents or keys.
+
+The CDC command `02 GET_USB_DIAGNOSTICS` also returns transfer/error counters,
+the first failing transfer's LBA, size and result, maximum transfer time, and
+the retained storage failure stage (`map_io`, `map_auth`, `data_io`,
+`data_auth`, `flush` or `cache_full_flush`). It is available while locked and
+while the drive is exported. It cannot respond while the shared runtime gate
+or USB task is blocked, and counters reset on device restart. Collect before
+resetting when possible:
+
+```sh
+python tools/usb_diagnostics.py --port COM14 --seconds 60
+```
+
 Backing segment files are not sparse on FAT: a write beyond their current end
 can require allocating a large gap, so buffering alone does not eliminate every
 first-write or mount-time pause. Hardware timing still needs verification.

@@ -1,31 +1,53 @@
 # Validation results — 2026-10-19
 
-## USB mount performance changes — 2026-10-29
+## USB mount performance changes � 2026-10-29
 
-User reports Explorer stalls on nearly every enable with 64 GB and 128 GB
-cards. Candidate mitigations add 16 KiB buffering to encrypted-drive file I/O,
-enable FAT fast-seek in firmware defaults, and move the periodic LCD update
-outside the runtime gate used by USB. Slow USB transfer and cache-flush timing
-is logged at 250 ms to distinguish I/O stalls from expected throughput limits.
-These changes preserve the on-card layout and do not require reformatting.
+The 64 GB device initially kept Explorer waiting during mount. Live CDC
+instrumentation recorded 29,619 reads over approximately 124 seconds, zero
+writes/errors, and a maximum transfer callback time of 23 ms. The read count
+then settled and the user confirmed the drive opened. Read-only inspection
+found 4 KiB clusters and two FATs of 60,570,112 bytes each, with clean-shutdown
+and no-hard-error flags set. The workload is consistent with scanning both
+FATs; individual request LBAs/byte totals were not recorded. Earlier Windows
+disk event 51 messages alone do not establish an SD-card failure.
 
-The 17 portable Python checks pass. A fresh Windows ESP-IDF 5.5.5 target
-build with GCC 14.2.0 completed without compiler warnings or errors. The
-application image is 1,402,096 bytes; generated configuration confirms 16 MB
-flash, octal PSRAM, FAT fast-seek and a 256-word cluster-link map. Native C
-host regressions were not run.
+With user authorization, 23 files (33,031,963 bytes) were backed up and verified
+with SHA-256 before Windows recreated only the virtual FAT32 volume using
+32 KiB clusters. All files were restored with matching hashes. The physical
+SD filesystem and encrypted container format were preserved. The new logical
+geometry is 512-byte sectors, 64 sectors/cluster, 121,376,768 sectors, 3,142
+reserved sectors and two FATs of 14,813 sectors (7,584,256 bytes each).
 
-A connected ESP32-S3 revision 0.2 with 16 MB flash and 8 MB PSRAM was backed
-up before flashing. Only the application at 0x10000 was updated, preserving
-the bootloader, partition table and NVS. Esptool write verification and a
-separate verify-flash pass both matched the built application. The subsequent
-boot log remained in ROM download mode; normal application startup requires
-a reset with BOOT released and is not yet confirmed.
+After safe eject and a user portal reconnect, reads settled at 3,761 in about
+30 seconds, with zero device-reported errors and a maximum callback time of
+24 ms. The user confirmed the drive opened. This reduces mount reads about
+87% and the observed mount workload duration about fourfold. Mounting still
+has a noticeable delay. Backup read throughput was about 471 KB/s; restore
+write throughput about 302 KB/s, including Windows/encryption/journal work.
+These are single-run observations, not controlled performance benchmarks.
+exFAT remains a fallback plan. No 128 GB hardware test is claimed.
 
-Resolution of the reported Explorer stalls is **not verified**. After normal
-startup, test repeated enable/open/eject, file hashes after reads/writes, and
-recovery on both card capacities. Earlier hardware results below predate
-these performance changes.
+Firmware changes add 16 KiB encrypted-drive stdio buffers, FAT fast-seek
+(default 256-word cluster-link maps), LCD updates outside the runtime gate,
+slow-transfer/flush logging, and CDC command 02 GET_USB_DIAGNOSTICS. The
+command reports counters and retained failure stages without file contents or
+credentials. Diagnostic polling does not count as activity in the final source.
+Newly created volumes >=4 GiB use 32 KiB clusters; existing geometry is retained
+until the host filesystem is deliberately recreated after backup.
+
+The pinned ESP-IDF 5.5.5/GCC 14.2.0 Windows build passes without compiler
+warnings/errors. The diagnostic application (1,402,704 bytes) was flashed at
+0x10000 and passed write verification plus a separate verify-flash digest check;
+CDC diagnostics worked after reset into the application. A full 16 MB flash
+backup was taken first. Bootloader, partition table and NVS were preserved.
+The subsequent new-volume geometry/diagnostic-idle source changes also build
+cleanly (1,402,720-byte application); that later image has not been flashed.
+
+All 17 portable Python regressions pass. New native C assertions cover cluster
+selection and retained I/O/authentication failure stages, but the Linux host C
+suite was not run in this Windows environment. Independent validation of newly
+synthesized 32 KiB-cluster volumes remains pending; the measured migration used
+Windows formatting. Earlier build and hardware results below predate this work.
 
 ## Passed in this update
 

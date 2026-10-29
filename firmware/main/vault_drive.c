@@ -85,6 +85,8 @@ static struct {
     FILE *reader;
 } *s;
 static uint8_t s_key[32];
+static const char *s_last_error="none";
+const char *vault_drive_last_error(void) { return s_last_error; }
 static bool s_ready,s_creating,s_cached,s_map_cached;
 static uint32_t s_cache_block,s_map_segment;
 static bool bit(const uint8_t *p,uint32_t i) { return (p[i/8]>>(i%8))&1; }
@@ -279,6 +281,12 @@ static void *big_calloc(size_t n) {
     return calloc(1,n);
 #endif
 }
+/* Larger volumes need larger clusters: 4 KiB clusters on a 64 GB drive
+ * produce two ~60 MB FATs that Windows reads during mount over full-speed USB.
+ * Only new volumes use this geometry; existing roots remain authoritative. */
+static uint32_t initial_cluster_sectors(uint64_t sectors) {
+    return sectors>=8388608?64:sectors>=1048576?8:1;
+}
 esp_err_t vault_drive_open(const uint8_t key[32],bool create) {
     if(!key || s || (create && vault_drive_exists())) return ESP_ERR_INVALID_STATE;
     /* Allocate the ~32 KB working set at runtime, preferring the 8 MB PSRAM so it
@@ -320,7 +328,7 @@ esp_err_t vault_drive_open(const uint8_t key[32],bool create) {
         sectors &= ~(uint64_t)2047;
         if(sectors<131072)goto fail;
         s->root.sectors=sectors;
-        uint32_t spc=sectors>=134217728?64:sectors>=1048576?8:1;
+        uint32_t spc=initial_cluster_sectors(sectors);
         s->root.cluster_sectors=spc;
         uint64_t numerator=4*(sectors-32+2*spc),denominator=512*spc+8;
         s->root.fat_sectors=(numerator+denominator-1)/denominator;
@@ -358,16 +366,24 @@ static esp_err_t load_block(uint32_t block) {
         s_map_cached=false;
         if(bit(s->root.created,seg)) {
             FILE *fp=segment_reader(seg);
-            if(!fp || fseek(fp,0,SEEK_SET)!=0 || fread(&s->map_record,1,sizeof(s->map_record),fp)!=sizeof(s->map_record) ||
-               crypt_record(false,seg,UINT32_MAX,&s->map_record,s->map)!=ESP_OK)return ESP_FAIL;
+            if(!fp || fseek(fp,0,SEEK_SET)!=0 || fread(&s->map_record,1,sizeof(s->map_record),fp)!=sizeof(s->map_record)) {
+                s_last_error="map_io";return ESP_FAIL;
+            }
+            if(crypt_record(false,seg,UINT32_MAX,&s->map_record,s->map)!=ESP_OK) {
+                s_last_error="map_auth";return ESP_FAIL;
+            }
         } else memset(s->map,0,sizeof(s->map));
         s_map_segment=seg;s_map_cached=true;
     }
     if(bit(s->map,within)) {
         FILE *fp=segment_reader(seg);
         if(!fp || fseek(fp,(long)(within+1)*sizeof(record_t),SEEK_SET)!=0 ||
-           fread(&s->data_record,1,sizeof(s->data_record),fp)!=sizeof(s->data_record) ||
-           crypt_record(false,seg,within,&s->data_record,s->plain)!=ESP_OK)return ESP_FAIL;
+           fread(&s->data_record,1,sizeof(s->data_record),fp)!=sizeof(s->data_record)) {
+            s_last_error="data_io";return ESP_FAIL;
+        }
+        if(crypt_record(false,seg,within,&s->data_record,s->plain)!=ESP_OK) {
+            s_last_error="data_auth";return ESP_FAIL;
+        }
     } else initial_block(block,s->plain);
     s_cache_block=block;s_cached=true;return ESP_OK;
 }
@@ -419,7 +435,7 @@ static esp_err_t flush_dirty(void) {
 }
 esp_err_t vault_drive_flush(void) {
     if(!s_ready || !s)return ESP_ERR_INVALID_STATE;
-    if(flush_dirty()!=ESP_OK) { drop();return ESP_FAIL; }
+    if(flush_dirty()!=ESP_OK) { s_last_error="flush";drop();return ESP_FAIL; }
     return ESP_OK;
 }
 /* Flushes cached writes first; a drive that cannot flush is still closed. */
@@ -442,7 +458,7 @@ static esp_err_t transfer(uint64_t offset,void *data,size_t size,bool write) {
         if(write) {
             if(!cached) {
                 /* A full cache is committed synchronously: USB back-pressure. */
-                if(s->dirty_count==s->cap && flush_dirty()!=ESP_OK) { drop();return ESP_FAIL; }
+                if(s->dirty_count==s->cap && flush_dirty()!=ESP_OK) { s_last_error="cache_full_flush";drop();return ESP_FAIL; }
                 if(n<BLOCK_BYTES && load_block(block)!=ESP_OK) { vault_drive_close();return ESP_FAIL; }
                 uint32_t slot=s->dirty_count++;
                 s->dirty_block[slot]=block;cached=s->dirty_plain+(size_t)slot*BLOCK_BYTES;

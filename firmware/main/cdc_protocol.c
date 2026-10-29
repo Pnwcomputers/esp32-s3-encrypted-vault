@@ -390,6 +390,14 @@ static void handle_lock(uint32_t req_id) {
 }
 
 static void dispatch_frame(const protocol_header_t *hdr, const uint8_t *payload) {
+    if(hdr->command==CMD_GET_USB_DIAGNOSTICS) {
+        if(hdr->payload_len) { send_status_response(hdr->command,hdr->request_id,STATUS_ERR_INVALID_ARG);return; }
+        char diagnostic[256];
+        size_t n=vault_msc_diagnostics(diagnostic+1,sizeof(diagnostic)-1);
+        diagnostic[0]=STATUS_OK;
+        send_response(hdr->command,hdr->request_id,(uint8_t*)diagnostic,n+1);
+        return;
+    }
     if((vault_msc_exported() || vault_msc_busy()) && hdr->command!=CMD_GET_STATUS) {
         send_status_response(hdr->command,hdr->request_id,STATUS_ERR_BUSY);return;
     }
@@ -506,7 +514,7 @@ static void protocol_task(void *pvParameters) {
             vault_runtime_enter();
             vault_runtime_poll();
             dispatch_frame(hdr, payload);
-            if (hdr->command != CMD_GET_STATUS) vault_runtime_touch();
+            if (hdr->command != CMD_GET_STATUS && hdr->command != CMD_GET_USB_DIAGNOSTICS) vault_runtime_touch();
             vault_runtime_leave();
 
             // Consume frame from buffer
