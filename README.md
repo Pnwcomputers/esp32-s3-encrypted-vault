@@ -107,11 +107,11 @@ Target: **Waveshare ESP32-S3-LCD-1.47** (no touch), 16 MB flash, 8 MB embedded o
 
 ### Prerequisites
 
-- 💻 Waveshare ESP32-S3-LCD-1.47 USB-A Board (16 MB flash, 8 MB PSRAM)
-- 💾 A microSD card (disposable test data only)
-- 🧰 ESP-IDF **5.5.5** (the manifest pins the verified framework and component versions)
+- 💻 [Waveshare ESP32-S3-LCD-1.47 USB-A Board](https://a.co/d/0372fDFW) (16 MB flash, 8 MB PSRAM)
+- 💾 A [microSD card](https://a.co/d/02GP0tbx) (Start with disposable test data ONLY)
+- 🧰 [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/get-started/index.html) **5.5.5** (the manifest pins the verified framework and component versions)
 - 🔌 USB-A connection + Host Computer
-- 🧱 *Optional* [3D Printed Enclosure](https://makerworld.com/en/models/1605019-case-for-waveshare-esp32-s3-1-47inch-with-keyring)
+- 🧱 *Optional but Recommended* [3D Printed Enclosure](https://makerworld.com/en/models/1605019-case-for-waveshare-esp32-s3-1-47inch-with-keyring)
 
 ### Use the Device
 
