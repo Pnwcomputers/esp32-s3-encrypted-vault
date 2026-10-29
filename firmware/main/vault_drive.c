@@ -17,6 +17,16 @@
 #define SEGMENT_BLOCKS 16384U
 #define ROOT_BYTES 8192U
 #define BLOCK_BYTES 4096U
+/* ESP-IDF's small default stdio buffer splits encrypted records into many
+ * SD transactions. Buffer both journal writes and segment reads/writes. */
+#define DRIVE_IO_BUFFER_BYTES (16U * 1024U)
+static FILE *drive_fopen(const char *path,const char *mode) {
+    FILE *fp=fopen(path,mode);
+    if(fp && setvbuf(fp,NULL,_IOFBF,DRIVE_IO_BUFFER_BYTES)!=0) {
+        fclose(fp);return NULL;
+    }
+    return fp;
+}
 #ifdef VAULT_DRIVE_TEST
 extern bool vault_drive_test_stop(unsigned stage);
 #else
@@ -132,7 +142,7 @@ static bool valid_root(void) {
     return clusters>=65525 && clusters<0x0ffffff5 && (uint64_t)fat*512>=(clusters+2)*4;
 }
 static bool save_root(void) {
-    FILE *fp=fopen(ROOT ".tmp","wb");if(!fp)return false;
+    FILE *fp=drive_fopen(ROOT ".tmp","wb");if(!fp)return false;
     if(!finish(fp,fwrite(&s->root_record,1,sizeof(s->root_record),fp)==sizeof(s->root_record))) return false;
     unlink(ROOT ".bak");
     if(rename(ROOT,ROOT ".bak")!=0 && errno!=ENOENT) return false;
@@ -144,7 +154,7 @@ static bool save_root(void) {
  * are never replayed. The physical SD FAT itself still needs safe removal. */
 static bool apply_journal(void) {
     journal_header_t h;
-    FILE *fp=fopen(JOURNAL,"rb");if(!fp)return false;
+    FILE *fp=drive_fopen(JOURNAL,"rb");if(!fp)return false;
     bool ok=fread(&h,1,sizeof(h),fp)==sizeof(h) &&
         fread(&s->data_record,1,sizeof(s->data_record),fp)==sizeof(s->data_record) &&
         fread(&s->map_record,1,sizeof(s->map_record),fp)==sizeof(s->map_record) &&
@@ -162,8 +172,8 @@ static bool apply_journal(void) {
         for(uint32_t i=0;i<SEGMENT_BLOCKS;i++) if(i!=h.block && bit(s->map,i))return false;
     }
     char path[160];segment_path(path,sizeof(path),h.segment);
-    fp=fopen(path,"r+b");
-    if(!fp && h.new_segment) fp=fopen(path,"w+b");
+    fp=drive_fopen(path,"r+b");
+    if(!fp && h.new_segment) fp=drive_fopen(path,"w+b");
     if(!fp)return false;
     long pos=(long)(h.block+1)*sizeof(record_t);
     ok=fseek(fp,pos,SEEK_SET)==0 && fwrite(&s->data_record,1,sizeof(s->data_record),fp)==sizeof(s->data_record) &&
@@ -185,8 +195,8 @@ static bool apply_batch(uint32_t count,bool write_root) {
     entry_t *t=table();
     for(uint32_t i=0;i<count;) {
         char path[160];segment_path(path,sizeof(path),t[i].segment);
-        FILE *fp=fopen(path,"r+b");
-        if(!fp && t[i].new_segment) fp=fopen(path,"w+b");
+        FILE *fp=drive_fopen(path,"r+b");
+        if(!fp && t[i].new_segment) fp=drive_fopen(path,"w+b");
         if(!fp)return false;
         bool ok=fseek(fp,0,SEEK_SET)==0 && fwrite(&s->records[i],1,sizeof(record_t),fp)==sizeof(record_t);
         for(i++;i<count && t[i].block!=UINT32_MAX;i++)
@@ -228,7 +238,7 @@ static bool replay_batch(FILE *fp,uint32_t *out_count) {
     *out_count=n;return true;
 }
 static bool replay_journal(void) {
-    FILE *fp=fopen(JOURNAL,"rb");if(!fp)return false;
+    FILE *fp=drive_fopen(JOURNAL,"rb");if(!fp)return false;
     uint8_t magic[8];
     bool batch=fread(magic,1,8,fp)==8 && !memcmp(magic,"VLTTXN3",8);
     uint32_t count=0;bool ok=batch && fseek(fp,0,SEEK_SET)==0 && replay_batch(fp,&count);
@@ -320,7 +330,7 @@ esp_err_t vault_drive_open(const uint8_t key[32],bool create) {
     }
     if(exists(JOURNAL) && !replay_journal())goto fail;
     if(!exists(ROOT))rename(ROOT ".bak",ROOT);
-    FILE *fp=fopen(ROOT,"rb");if(!fp)goto fail;
+    FILE *fp=drive_fopen(ROOT,"rb");if(!fp)goto fail;
     bool ok=fread(&s->root_record,1,sizeof(s->root_record),fp)==sizeof(s->root_record) && fgetc(fp)==EOF;
     if(fclose(fp)!=0)ok=false;
     if(!ok || crypt_root(false)!=ESP_OK || !valid_root())goto fail;
@@ -339,7 +349,7 @@ static FILE *segment_reader(uint32_t seg) {
     if(s->reader && s->read_segment==seg)return s->reader;
     close_reader();
     char path[160];segment_path(path,sizeof(path),seg);
-    s->reader=fopen(path,"rb");s->read_segment=seg;return s->reader;
+    s->reader=drive_fopen(path,"rb");s->read_segment=seg;return s->reader;
 }
 static esp_err_t load_block(uint32_t block) {
     if(s_cached && s_cache_block==block)return ESP_OK;
@@ -398,7 +408,7 @@ static esp_err_t flush_dirty(void) {
     memcpy(p->magic,"VLTTXN3",8);memcpy(p->uuid,s->root_record.uuid,16);p->count=count;p->reserved=0;
     vault_crypto_random(iv,12);
     if((root_changed && crypt_root(true)!=ESP_OK) || batch_tag(true,iv,tag,count)!=ESP_OK)return ESP_FAIL;
-    FILE *fp=fopen(JOURNAL ".tmp","wb");if(!fp)return ESP_FAIL;
+    FILE *fp=drive_fopen(JOURNAL ".tmp","wb");if(!fp)return ESP_FAIL;
     bool ok=fwrite(p,1,sizeof(*p),fp)==sizeof(*p) && fwrite(iv,1,12,fp)==12 && fwrite(tag,1,16,fp)==16 &&
         fwrite(t,sizeof(entry_t),count,fp)==count && fwrite(s->records,sizeof(record_t),count,fp)==count &&
         fwrite(&s->root_record,1,sizeof(s->root_record),fp)==sizeof(s->root_record);

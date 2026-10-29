@@ -1,5 +1,32 @@
 # Validation results — 2026-10-19
 
+## USB mount performance changes — 2026-10-29
+
+User reports Explorer stalls on nearly every enable with 64 GB and 128 GB
+cards. Candidate mitigations add 16 KiB buffering to encrypted-drive file I/O,
+enable FAT fast-seek in firmware defaults, and move the periodic LCD update
+outside the runtime gate used by USB. Slow USB transfer and cache-flush timing
+is logged at 250 ms to distinguish I/O stalls from expected throughput limits.
+These changes preserve the on-card layout and do not require reformatting.
+
+The 17 portable Python checks pass. A fresh Windows ESP-IDF 5.5.5 target
+build with GCC 14.2.0 completed without compiler warnings or errors. The
+application image is 1,402,096 bytes; generated configuration confirms 16 MB
+flash, octal PSRAM, FAT fast-seek and a 256-word cluster-link map. Native C
+host regressions were not run.
+
+A connected ESP32-S3 revision 0.2 with 16 MB flash and 8 MB PSRAM was backed
+up before flashing. Only the application at 0x10000 was updated, preserving
+the bootloader, partition table and NVS. Esptool write verification and a
+separate verify-flash pass both matched the built application. The subsequent
+boot log remained in ROM download mode; normal application startup requires
+a reset with BOOT released and is not yet confirmed.
+
+Resolution of the reported Explorer stalls is **not verified**. After normal
+startup, test repeated enable/open/eject, file hashes after reads/writes, and
+recovery on both card capacities. Earlier hardware results below predate
+these performance changes.
+
 ## Passed in this update
 
 - **Code & security review** across six dimensions with adversarial verification; see

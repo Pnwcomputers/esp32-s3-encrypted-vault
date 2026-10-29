@@ -294,13 +294,16 @@ void app_main(void) {
         vault_runtime_poll();
         uint32_t total = 0, free_mb = 0, count = 0;
         vault_storage_get_stats(&total, &free_mb, &count);
+        bool unlocked = vault_storage_is_unlocked();
+        vault_runtime_leave();
+        /* Rendering can wait for LVGL/LCD work. USB must not wait for the
+         * display while enumerating or serving filesystem requests. */
         char detail[256];
         snprintf(detail, sizeof(detail), "%s\nhttp://192.168.4.1\n\n%lu / %lu MB free\n%lu files%s%s",
                  s_boot_cfg.wifi_ssid, (unsigned long)free_mb,
                  (unsigned long)total, (unsigned long)count,
                  sd_ok ? "" : "\n", sd_ok ? "" : vault_storage_unavailable_reason());
-        display_status(vault_storage_is_unlocked() ? "VAULT UNLOCKED" : "VAULT LOCKED", detail);
-        vault_runtime_leave();
+        display_status(unlocked ? "VAULT UNLOCKED" : "VAULT LOCKED", detail);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

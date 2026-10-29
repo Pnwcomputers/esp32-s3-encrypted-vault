@@ -84,6 +84,22 @@ data. Capacity is calculated at creation, not expanded automatically after
 deleting old phone/client files. Speed is still lower than a native SD reader
 because every block is encrypted and each commit is journaled.
 
+Drive files use 16 KiB stdio buffers to avoid splitting encrypted records into
+small SD operations. Firmware defaults enable FAT fast-seek for read-only
+backing files, with a 1 KiB cluster-link map per open file. Existing build
+configurations must enable `CONFIG_FATFS_USE_FASTSEEK=y` and set
+`CONFIG_FATFS_FAST_SEEK_BUFFER_SIZE=256` to pick up these defaults. The periodic
+LCD update releases the runtime gate before waiting for the display.
+USB reads/writes and explicit/idle cache flushes taking at least 250 ms log `Slow USB`
+with the LBA, size and elapsed time (including waiting for the runtime gate).
+Capture these logs while enabling the drive and opening it in Explorer when
+investigating mount stalls. Flush messages report elapsed time and result;
+they do not include time waiting for the runtime gate. These messages contain
+no file contents or keys.
+Backing segment files are not sparse on FAT: a write beyond their current end
+can require allocating a large gap, so buffering alone does not eliminate every
+first-write or mount-time pause. Hardware timing still needs verification.
+
 ## USB integration
 
 The pinned esp_tinyusb 2.4.0 descriptors provide CDC + MSC. Its default physical

@@ -6,6 +6,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
+#include "esp_log.h"
 #include "tusb.h"
 #include <string.h>
 
@@ -14,6 +15,15 @@
 
 static bool s_worker, s_changed, s_flusher;
 static int64_t s_last_write;
+static esp_err_t flush_drive(void) {
+    int64_t started=esp_timer_get_time();
+    esp_err_t err=vault_drive_flush();
+    int64_t elapsed=esp_timer_get_time()-started;
+    if(elapsed>=250000)
+        ESP_LOGW("vault_msc","Slow USB cache flush: %lld ms (err %d)",
+                 (long long)(elapsed/1000),(int)err);
+    return err;
+}
 bool vault_msc_exported(void) { return vault_storage_is_unlocked() && vault_drive_ready(); }
 bool vault_msc_busy(void) { return s_worker; }
 static bool enabled(void) { vault_config_t cfg;vault_config_get(&cfg);return cfg.usb_enabled; }
@@ -37,7 +47,7 @@ static void flush_task(void *arg) {
         vTaskDelay(pdMS_TO_TICKS(250));
         vault_runtime_enter();
         if(vault_drive_ready() && vault_drive_dirty() && esp_timer_get_time()-s_last_write>=FLUSH_IDLE_US)
-            (void)vault_drive_flush(); /* On failure the drive closes and Windows sees no medium. */
+            (void)flush_drive(); /* On failure the drive closes and Windows sees no medium. */
         vault_runtime_leave();
     }
 }
@@ -88,6 +98,7 @@ bool tud_msc_is_writable_cb(uint8_t lun) {
     vault_runtime_enter();bool ready=medium(lun);vault_runtime_leave();return ready;
 }
 static int32_t transfer(uint8_t lun,uint32_t lba,uint32_t offset,void *buffer,uint32_t size,bool write) {
+    int64_t started=esp_timer_get_time();
     vault_runtime_enter();
     esp_err_t err=ESP_ERR_INVALID_STATE;
     if(medium(lun)) {
@@ -97,7 +108,13 @@ static int32_t transfer(uint8_t lun,uint32_t lba,uint32_t offset,void *buffer,ui
         else tud_msc_set_sense(lun,err==ESP_ERR_INVALID_ARG?SCSI_SENSE_ILLEGAL_REQUEST:SCSI_SENSE_MEDIUM_ERROR,
                                err==ESP_ERR_INVALID_ARG?0x21:0x11,0);
     }
-    vault_runtime_leave();return err==ESP_OK?(int32_t)size:-1;
+    vault_runtime_leave();
+    int64_t elapsed=esp_timer_get_time()-started;
+    if(elapsed>=250000)
+        ESP_LOGW("vault_msc","Slow USB %s: LBA %lu offset %lu bytes %lu took %lld ms (err %d)",
+                 write?"write":"read",(unsigned long)lba,(unsigned long)offset,
+                 (unsigned long)size,(long long)(elapsed/1000),(int)err);
+    return err==ESP_OK?(int32_t)size:-1;
 }
 int32_t tud_msc_read10_cb(uint8_t lun,uint32_t lba,uint32_t offset,void *buffer,uint32_t size) {
     return transfer(lun,lba,offset,buffer,size,false);
@@ -117,7 +134,7 @@ bool tud_msc_start_stop_cb(uint8_t lun,uint8_t power,bool start,bool eject) {
 int32_t tud_msc_scsi_cb(uint8_t lun,const uint8_t cmd[16],void *buffer,uint16_t size) {
     /* SYNCHRONIZE CACHE commits the RAM write cache before succeeding. */
     if(cmd[0]==0x35) {
-        vault_runtime_enter();bool ok=medium(lun) && vault_drive_flush()==ESP_OK;vault_runtime_leave();
+        vault_runtime_enter();bool ok=medium(lun) && flush_drive()==ESP_OK;vault_runtime_leave();
         if(!ok) tud_msc_set_sense(lun,SCSI_SENSE_MEDIUM_ERROR,0x0c,0);
         return ok?0:-1;
     }
