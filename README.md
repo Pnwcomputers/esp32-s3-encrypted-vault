@@ -35,7 +35,7 @@ Commercial encrypted USB drives work well, but they're expensive, their capacity
 
 | | **This project** | Typical hardware-encrypted flash drive |
 |---|---|---|
-| **Cost Estimate(s)** | **~$25** ESP32-S3 LCD board + microSD Card) | ~$100 +/- |
+| **Cost Estimate(s)** | **~$25** ESP32-S3 LCD + microSD Card | ~$100 +/- |
 | **Bigger capacity** | Buy a bigger microSD card | Buy a new, pricier drive |
 | **Encryption** | AES-256-GCM, done on the ESP32 | AES-256 (usually XTS), done in the drive |
 | **Unlock** | Phone/browser over the device's own Wi-Fi | Physical keypad on the drive |
