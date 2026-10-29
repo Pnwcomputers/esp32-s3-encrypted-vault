@@ -8,6 +8,21 @@ Dated sections before 1.0.0 record development history before the first release.
 
 ## [Unreleased]
 
+### Firmware
+- When the microSD card can't be used, the LCD, web portal and unlock error now say
+  why: exFAT or NTFS card ("reformat it as FAT32"), no readable FAT32 filesystem,
+  card not detected, or vault folders not creatable. `/api/status` gains an
+  `sd_error` field (`null` when the card is ready).
+- USB drive writes are cached in PSRAM (128 × 4 KB) and committed in batches under
+  a single `VLTTXN3` redo journal, after ~1 s idle, on SYNCHRONIZE CACHE, eject,
+  lock, or when the cache fills. Previously every 4 KB write was journaled and
+  fsynced on its own (~13 KB/s). **Eject before unplugging**: up to ~1 s of
+  acknowledged writes can be lost otherwise. Older `VLTTXN2` journals still replay.
+- Reads keep the current segment file open instead of reopening it per block.
+- The SD bus runs at 40 MHz, falling back to 20 MHz if the card won't start.
+- Unlocking no longer exposes an existing USB drive automatically; press
+  **Enable/Reconnect SD card drive**.
+
 ### Documentation
 - README: lead with the project's goal, a low-cost (~$25) alternative to $150+
   encrypted flash drives, and add a "Why This Exists" cost/trade-off comparison.

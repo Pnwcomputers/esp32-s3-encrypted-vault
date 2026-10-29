@@ -40,11 +40,19 @@ There is no recovery. The data key can't be unwrapped without it. See
 
 ## microSD card
 
-### "Storage unavailable" / card not detected
-- The card must be **FAT32**. Large cards often ship as exFAT; reformat them to FAT32
-  on a computer first (with no vault data on them).
-- Reseat the card and power-cycle. The firmware never auto-formats a card that fails
-  to mount.
+### "SD card unavailable" / card not detected
+The LCD and the web portal say why the card couldn't be used:
+
+| Message | Fix |
+|---|---|
+| *SD card is exFAT; reformat it as FAT32* | New cards over 32 GB (SDXC) ship as exFAT. Reformat to FAT32 on a computer first (with no vault data on it); on Linux, `mkfs.vfat -F 32` handles any size. |
+| *SD card is NTFS; reformat it as FAT32* | Same fix as exFAT. |
+| *SD card has no readable FAT32 filesystem* | The card is blank, GPT-partitioned or corrupted. Reformat to FAT32 (single MBR partition). |
+| *SD card not detected; reseat it and restart* | The card didn't respond. Reseat it until it clicks, then power-cycle; try another card if it persists. |
+| *SD card is read-only or full* | The card mounted but the vault folders couldn't be created. Check free space and the card's lock switch (adapters). |
+
+The card is checked once at boot, so insert it before plugging in. The firmware never
+auto-formats a card that fails to mount.
 
 ## USB drive (MSC)
 
@@ -55,16 +63,19 @@ There is no recovery. The data key can't be unwrapped without it. See
   enabled in `sdkconfig.defaults`).
 
 ### The drive doesn't appear after unlock or eject
-Press **Reconnect SD card drive**. If Windows removed the whole USB device, unplug
-and replug the cable, then unlock and reconnect.
+Unlocking doesn't expose the drive by itself. Press **Enable SD card drive** (or
+**Reconnect SD card drive**). If Windows removed the whole USB device, unplug and
+replug the cable, then unlock and reconnect.
 
 ### I can't lock, or auto-lock doesn't fire
 Locking, settings changes and legacy file operations wait until you **safely eject**
 the drive in Windows, so cached writes aren't lost. Eject, then lock.
 
-### Writes are very slow
-Expected for now (tens of KB/s). Each 4 KB block is encrypted and journaled with
-`fsync` before Windows is told it's written. Faster batching is on the roadmap.
+### Writes are slow, or the last files I copied are missing
+Writes are cached in RAM and committed to the card in batches. They're still
+slower than a plain card reader because every block is encrypted and journaled.
+If files from just before unplugging are missing, the stick was pulled before the
+cache was committed: always **Eject** first.
 
 ### I/O error reading a file
 The stored block failed authentication or is missing (corruption, an external edit

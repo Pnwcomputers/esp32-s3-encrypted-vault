@@ -5,17 +5,18 @@
 #include "vault_config.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_timer.h"
 #include "tusb.h"
 #include <string.h>
 
-static bool s_worker, s_changed;
+/* Cached drive writes are committed after this long without a new write. */
+#define FLUSH_IDLE_US 1000000
+
+static bool s_worker, s_changed, s_flusher;
+static int64_t s_last_write;
 bool vault_msc_exported(void) { return vault_storage_is_unlocked() && vault_drive_ready(); }
 bool vault_msc_busy(void) { return s_worker; }
 static bool enabled(void) { vault_config_t cfg;vault_config_get(&cfg);return cfg.usb_enabled; }
-void vault_msc_on_unlock(void) {
-    if(enabled() && !s_worker && !vault_drive_ready() && vault_drive_exists() && vault_storage_drive_open(false)==ESP_OK)
-        s_changed=true;
-}
 static void create_task(void *arg) {
     unsigned batch=0;
     for(;;) {
@@ -31,8 +32,21 @@ static void create_task(void *arg) {
     }
     vTaskDelete(NULL);
 }
+static void flush_task(void *arg) {
+    for(;;) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+        vault_runtime_enter();
+        if(vault_drive_ready() && vault_drive_dirty() && esp_timer_get_time()-s_last_write>=FLUSH_IDLE_US)
+            (void)vault_drive_flush(); /* On failure the drive closes and Windows sees no medium. */
+        vault_runtime_leave();
+    }
+}
+/* The drive is exported only from here (web "Enable SD card drive"), never
+ * implicitly on unlock. */
 esp_err_t vault_msc_connect(void) {
     if(!enabled() || !vault_storage_is_unlocked() || s_worker) return ESP_ERR_INVALID_STATE;
+    if(!s_flusher) s_flusher=xTaskCreate(flush_task,"usb_drive_flush",4096,NULL,4,NULL)==pdPASS;
+    if(!s_flusher) return ESP_ERR_NO_MEM;
     if(vault_drive_ready()) return ESP_OK;
     bool create=!vault_drive_exists();
     esp_err_t err=vault_storage_drive_open(create);
@@ -79,7 +93,7 @@ static int32_t transfer(uint8_t lun,uint32_t lba,uint32_t offset,void *buffer,ui
     if(medium(lun)) {
         uint64_t address=(uint64_t)lba*512+offset;
         err=write?vault_drive_write(address,buffer,size):vault_drive_read(address,buffer,size);
-        if(err==ESP_OK) vault_runtime_touch();
+        if(err==ESP_OK) { vault_runtime_touch();if(write)s_last_write=esp_timer_get_time(); }
         else tud_msc_set_sense(lun,err==ESP_ERR_INVALID_ARG?SCSI_SENSE_ILLEGAL_REQUEST:SCSI_SENSE_MEDIUM_ERROR,
                                err==ESP_ERR_INVALID_ARG?0x21:0x11,0);
     }
@@ -101,7 +115,11 @@ bool tud_msc_start_stop_cb(uint8_t lun,uint8_t power,bool start,bool eject) {
     vault_runtime_leave();return ok;
 }
 int32_t tud_msc_scsi_cb(uint8_t lun,const uint8_t cmd[16],void *buffer,uint16_t size) {
-    /* Every block is flushed before WRITE10 succeeds; no volatile write cache. */
-    if(cmd[0]==0x35) { vault_runtime_enter();bool ok=medium(lun);vault_runtime_leave();return ok?0:-1; }
+    /* SYNCHRONIZE CACHE commits the RAM write cache before succeeding. */
+    if(cmd[0]==0x35) {
+        vault_runtime_enter();bool ok=medium(lun) && vault_drive_flush()==ESP_OK;vault_runtime_leave();
+        if(!ok) tud_msc_set_sense(lun,SCSI_SENSE_MEDIUM_ERROR,0x0c,0);
+        return ok?0:-1;
+    }
     tud_msc_set_sense(lun,SCSI_SENSE_ILLEGAL_REQUEST,0x20,0);return -1;
 }

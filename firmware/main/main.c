@@ -14,6 +14,7 @@
 #include "driver/sdmmc_host.h"
 #include "sdmmc_cmd.h"
 #include "esp_vfs_fat.h"
+#include "esp_heap_caps.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
@@ -146,6 +147,38 @@ void init_lcd(void) {
     ESP_ERROR_CHECK(ledc_channel_config(&channel));
 }
 
+static bool has_oem_name(const uint8_t *sector, const char *name) {
+    return sector[510] == 0x55 && sector[511] == 0xAA && memcmp(sector + 3, name, 8) == 0;
+}
+
+/* Read-only look at the card after a failed mount so the user is told why.
+ * The failed mount already released the host, so bring it up briefly here. */
+static const char *sd_probe_filesystem(const sdmmc_slot_config_t *slot_config) {
+    const char *reason = "SD card has no readable FAT32 filesystem; reformat it as FAT32";
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    sdmmc_card_t *card = calloc(1, sizeof(*card));
+    uint8_t *sector = heap_caps_malloc(512, MALLOC_CAP_DMA);
+    if (!card || !sector || sdmmc_host_init() != ESP_OK) goto out;
+    if (sdmmc_host_init_slot(host.slot, slot_config) == ESP_OK && sdmmc_card_init(&host, card) == ESP_OK &&
+        sdmmc_read_sectors(card, sector, 0, 1) == ESP_OK) {
+        /* Sector 0 is either a volume boot record (no partition table) or an
+         * MBR whose first entry points at one; GPT cards keep the generic text. */
+        if (!has_oem_name(sector, "EXFAT   ") && !has_oem_name(sector, "NTFS    ") &&
+            sector[510] == 0x55 && sector[511] == 0xAA && sector[450] != 0x00 && sector[450] != 0xEE) {
+            uint32_t lba = sector[454] | (sector[455] << 8) | (sector[456] << 16) | ((uint32_t)sector[457] << 24);
+            if (lba == 0 || sdmmc_read_sectors(card, sector, lba, 1) != ESP_OK) memset(sector, 0, 512);
+        }
+        if (has_oem_name(sector, "EXFAT   ")) reason = "SD card is exFAT; reformat it as FAT32";
+        else if (has_oem_name(sector, "NTFS    ")) reason = "SD card is NTFS; reformat it as FAT32";
+    }
+    sdmmc_host_deinit();
+out:
+    ESP_LOGE(TAG, "%s", reason);
+    free(sector);
+    free(card);
+    return reason;
+}
+
 esp_err_t init_sd_card(void) {
     ESP_LOGI(TAG, "Initializing SD Card...");
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
@@ -158,9 +191,20 @@ esp_err_t init_sd_card(void) {
     slot_config.width = 4; slot_config.clk = SD_CLK; slot_config.cmd = SD_CMD;
     slot_config.d0 = SD_D0; slot_config.d1 = SD_D1; slot_config.d2 = SD_D2; slot_config.d3 = SD_D3;
 
+    /* 40 MHz high-speed bus; fall back to the 20 MHz default if the card or
+     * wiring doesn't come up at that speed. */
+    host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;
     esp_err_t ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
+    if (ret != ESP_OK && ret != ESP_FAIL) {
+        ESP_LOGW(TAG, "SD high-speed init failed (%s); retrying at default speed.", esp_err_to_name(ret));
+        host.max_freq_khz = SDMMC_FREQ_DEFAULT;
+        ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
+    }
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "SD mount failed.");
+        ESP_LOGE(TAG, "SD mount failed (%s).", esp_err_to_name(ret));
+        /* ESP_FAIL means the card answered but FATFS found no FAT volume. */
+        vault_storage_set_unavailable_reason(ret == ESP_FAIL ? sd_probe_filesystem(&slot_config) :
+            "SD card not detected; reseat it and restart");
     } else {
         ESP_LOGI(TAG, "SD Card mounted successfully.");
     }
@@ -232,7 +276,10 @@ void app_main(void) {
     init_lcd();
     init_ui();
     bool sd_ok = init_sd_card() == ESP_OK;
-    if (sd_ok) sd_ok = vault_storage_init() == ESP_OK;
+    if (sd_ok && vault_storage_init() != ESP_OK) {
+        sd_ok = false;
+        vault_storage_set_unavailable_reason("SD card is read-only or full; vault folders could not be created");
+    }
     vault_storage_set_ready(sd_ok);
     wifi_init_softap();
     vault_web_set_display_cb(display_status);
@@ -247,11 +294,11 @@ void app_main(void) {
         vault_runtime_poll();
         uint32_t total = 0, free_mb = 0, count = 0;
         vault_storage_get_stats(&total, &free_mb, &count);
-        char detail[192];
-        snprintf(detail, sizeof(detail), "%s\nhttp://192.168.4.1\n\n%lu / %lu MB free\n%lu files%s",
+        char detail[256];
+        snprintf(detail, sizeof(detail), "%s\nhttp://192.168.4.1\n\n%lu / %lu MB free\n%lu files%s%s",
                  s_boot_cfg.wifi_ssid, (unsigned long)free_mb,
                  (unsigned long)total, (unsigned long)count,
-                 sd_ok ? "" : "\nSD card unavailable");
+                 sd_ok ? "" : "\n", sd_ok ? "" : vault_storage_unavailable_reason());
         display_status(vault_storage_is_unlocked() ? "VAULT UNLOCKED" : "VAULT LOCKED", detail);
         vault_runtime_leave();
         vTaskDelay(pdMS_TO_TICKS(1000));
