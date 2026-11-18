@@ -21,6 +21,7 @@ static void set_defaults(vault_config_t *cfg) {
     cfg->led_mode = VAULT_LED_MODE_NORMAL;
     cfg->lcd_brightness = 100;
     cfg->lcd_rotation = 180;
+    cfg->usb_read_only = false;
 }
 
 esp_err_t vault_config_init(void) {
@@ -58,10 +59,14 @@ esp_err_t vault_config_init(void) {
         nvs_get_u16(h, "rot", &s_active_cfg.lcd_rotation);
 
         vault_config_t saved;
+        set_defaults(&saved);
         size_t saved_len = sizeof(saved);
+        /* Accept the current layout or the 1.1.x one, which lacks trailing fields. */
         if (nvs_get_blob(h, "config_v1", &saved, &saved_len) == ESP_OK &&
-            saved_len == sizeof(saved) && vault_config_validate(&saved) == ESP_OK)
-            s_active_cfg = saved;
+            (saved_len == sizeof(saved) || saved_len == VAULT_CONFIG_LEGACY_SIZE)) {
+            if (saved_len == VAULT_CONFIG_LEGACY_SIZE) saved.usb_read_only = false;
+            if (vault_config_validate(&saved) == ESP_OK) s_active_cfg = saved;
+        }
         nvs_close(h);
         ESP_LOGI(TAG, "Config loaded from NVS. SSID: %s", s_active_cfg.wifi_ssid);
     } else {

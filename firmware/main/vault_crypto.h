@@ -58,6 +58,26 @@ esp_err_t vault_crypto_aes_gcm_decrypt(const uint8_t *key,
                                        const uint8_t *tag, size_t tag_len,
                                        uint8_t *output);
 
+/**
+ * Reusable AES-256-GCM context for many records under one key. Keying once
+ * avoids recomputing the GHASH key and table on every record. Not thread-safe;
+ * callers serialize access. Destroy erases the key material.
+ */
+typedef struct vault_gcm vault_gcm_t;
+vault_gcm_t *vault_gcm_create(const uint8_t key[VAULT_KEY_SIZE]);
+void vault_gcm_destroy(vault_gcm_t *ctx);
+esp_err_t vault_gcm_encrypt(vault_gcm_t *ctx,
+                            const uint8_t *iv, size_t iv_len,
+                            const uint8_t *aad, size_t aad_len,
+                            const uint8_t *input, size_t length,
+                            uint8_t *output, uint8_t *tag, size_t tag_len);
+/* Returns ESP_ERR_INVALID_STATE on authentication failure. */
+esp_err_t vault_gcm_decrypt(vault_gcm_t *ctx,
+                            const uint8_t *iv, size_t iv_len,
+                            const uint8_t *aad, size_t aad_len,
+                            const uint8_t *input, size_t length,
+                            const uint8_t *tag, size_t tag_len, uint8_t *output);
+
 #ifdef __cplusplus
 }
 #endif

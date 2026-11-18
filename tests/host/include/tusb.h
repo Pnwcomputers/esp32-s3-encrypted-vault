@@ -13,3 +13,4 @@ int32_t tud_msc_read10_cb(uint8_t lun,uint32_t lba,uint32_t offset,void *buffer,
 int32_t tud_msc_write10_cb(uint8_t lun,uint32_t lba,uint32_t offset,uint8_t *buffer,uint32_t size);
 bool tud_msc_start_stop_cb(uint8_t lun,uint8_t power,bool start,bool eject);
 int32_t tud_msc_scsi_cb(uint8_t lun,const uint8_t cmd[16],void *buffer,uint16_t size);
+#define SCSI_SENSE_DATA_PROTECT 7

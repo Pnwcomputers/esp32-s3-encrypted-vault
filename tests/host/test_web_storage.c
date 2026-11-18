@@ -79,6 +79,21 @@ int main(void) {
  call("/api/upload?name=test.bin",HTTP_POST,"test",token,api_upload_handler);assert(strstr(r.status,"409"));
  call("/api/status",HTTP_GET,NULL,token,api_status_handler);assert(strstr(r.response,"\"usb_drive_ready\":true"));
  assert(tud_msc_start_stop_cb(0,0,false,true));
+ // Write block: per-connection choice, saved default, and no switching while exported.
+ call("/api/usb/connect",HTTP_POST,"{\"read_only\":1}",token,api_usb_connect);assert(strstr(r.status,"400") && !vault_msc_exported());
+ call("/api/usb/connect",HTTP_POST,"[]",token,api_usb_connect);assert(strstr(r.status,"400") && !vault_msc_exported());
+ call("/api/settings",HTTP_POST,"{\"current_pin\":\"123456\",\"usb_read_only\":true}",token,api_settings_post);assert(strstr(r.response,"\"success\":true"));
+ call("/api/settings",HTTP_GET,NULL,token,api_settings_get);assert(strstr(r.response,"\"usb_read_only\":true"));
+ call("/api/usb/connect",HTTP_POST,NULL,token,api_usb_connect);assert(strstr(r.response,"\"read_only\":true"));
+ call("/api/status",HTTP_GET,NULL,token,api_status_handler);assert(strstr(r.response,"\"usb_drive_read_only\":true"));
+ assert(!tud_msc_is_writable_cb(0));
+ call("/api/usb/connect",HTTP_POST,"{\"read_only\":false}",token,api_usb_connect);assert(strstr(r.status,"409") && strstr(r.response,"switching"));
+ call("/api/usb/connect",HTTP_POST,"{\"read_only\":true}",token,api_usb_connect);assert(strstr(r.response,"\"success\":true"));
+ assert(tud_msc_start_stop_cb(0,0,false,true));
+ call("/api/usb/connect",HTTP_POST,"{\"read_only\":false}",token,api_usb_connect);assert(strstr(r.response,"\"read_only\":false"));
+ call("/api/status",HTTP_GET,NULL,token,api_status_handler);assert(strstr(r.response,"\"usb_drive_read_only\":false"));
+ assert(tud_msc_is_writable_cb(0));
+ assert(tud_msc_start_stop_cb(0,0,false,true));
  call("/api/lock",HTTP_POST,"{}",token,api_lock_handler);assert(!vault_storage_is_unlocked());
  free(data);puts("Host firmware regression checks passed (fragmented HTTP, sessions, settings, storage, credentials, idle lock, USB ownership)");return 0;
 }

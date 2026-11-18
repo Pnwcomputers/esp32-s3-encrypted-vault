@@ -46,6 +46,15 @@ esp_err_t vault_crypto_aes_gcm_decrypt(const uint8_t *key,const uint8_t *iv,size
  if(n)ok=ok&&EVP_DecryptUpdate(c,out,&len,in,n)==1;
  ok=ok&&EVP_CIPHER_CTX_ctrl(c,EVP_CTRL_GCM_SET_TAG,tl,(void*)tag)==1&&EVP_DecryptFinal_ex(c,out+n,&len)==1;EVP_CIPHER_CTX_free(c);return ok?ESP_OK:ESP_ERR_INVALID_STATE;
 }
+struct vault_gcm { uint8_t key[32]; };
+vault_gcm_t *vault_gcm_create(const uint8_t key[32]) { if(!key)return NULL;vault_gcm_t *c=malloc(sizeof(*c));if(c)memcpy(c->key,key,32);return c; }
+void vault_gcm_destroy(vault_gcm_t *c) { if(c){OPENSSL_cleanse(c,sizeof(*c));free(c);} }
+esp_err_t vault_gcm_encrypt(vault_gcm_t *c,const uint8_t *iv,size_t il,const uint8_t *aad,size_t al,const uint8_t *in,size_t n,uint8_t *out,uint8_t *tag,size_t tl) {
+ return c?vault_crypto_aes_gcm_encrypt(c->key,iv,il,aad,al,in,n,out,tag,tl):ESP_ERR_INVALID_ARG;
+}
+esp_err_t vault_gcm_decrypt(vault_gcm_t *c,const uint8_t *iv,size_t il,const uint8_t *aad,size_t al,const uint8_t *in,size_t n,const uint8_t *tag,size_t tl,uint8_t *out) {
+ return c?vault_crypto_aes_gcm_decrypt(c->key,iv,il,aad,al,in,n,tag,tl,out):ESP_ERR_INVALID_ARG;
+}
 esp_err_t nvs_open(const char *n,int mode,nvs_handle_t *h) {*h=1;return ESP_OK;}
 void nvs_close(nvs_handle_t h) {}
 esp_err_t nvs_get_str(nvs_handle_t h,const char *k,char *v,size_t *n) {return ESP_ERR_NOT_FOUND;}

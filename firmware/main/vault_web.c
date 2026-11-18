@@ -125,7 +125,7 @@ static esp_err_t api_status_handler(httpd_req_t *req) {
     const char *sd_error = vault_storage_unavailable_reason();
     char resp[640];
     snprintf(resp, sizeof(resp),
-             "{\"sd_error\":%s%s%s,\"provisioned\":%s,\"unlocked\":%s,\"total_mb\":%u,\"free_mb\":%u,\"used_mb\":%u,\"file_count\":%u,\"usb_drive_exists\":%s,\"usb_drive_ready\":%s,\"usb_drive_creating\":%s,\"usb_drive_mb\":%lu}",
+             "{\"sd_error\":%s%s%s,\"provisioned\":%s,\"unlocked\":%s,\"total_mb\":%u,\"free_mb\":%u,\"used_mb\":%u,\"file_count\":%u,\"usb_drive_exists\":%s,\"usb_drive_ready\":%s,\"usb_drive_creating\":%s,\"usb_drive_read_only\":%s,\"usb_drive_mb\":%lu}",
              sd_error ? "\"" : "", sd_error ? sd_error : "null", sd_error ? "\"" : "",
              prov ? "true" : "false",
              unlocked ? "true" : "false",
@@ -133,6 +133,7 @@ static esp_err_t api_status_handler(httpd_req_t *req) {
              unlocked && vault_drive_exists()?"true":"false",
              unlocked && vault_msc_exported()?"true":"false",
              unlocked && vault_msc_busy()?"true":"false",
+             unlocked && vault_msc_read_only()?"true":"false",
              unlocked?(unsigned long)((uint64_t)vault_drive_sector_count()*512/(1024*1024)):0UL);
 
     httpd_resp_set_type(req, "application/json");
@@ -206,11 +207,27 @@ static esp_err_t api_lock_handler(httpd_req_t *req) {
     return httpd_resp_send(req, "{\"success\":true}", HTTPD_RESP_USE_STRLEN);
 }
 
+/* Optional body {"read_only":true|false}; without it the saved default applies. */
 static esp_err_t api_usb_connect(httpd_req_t *req) {
-    esp_err_t err=vault_msc_connect();
+    vault_config_t cfg;vault_config_get(&cfg);
+    bool read_only=cfg.usb_read_only;
+    if(req->content_len) {
+        char body[64];
+        if(!receive_body(req,body,sizeof(body))) return json_error(req,"400 Bad Request","Invalid request body");
+        cJSON *o=cJSON_Parse(body);
+        cJSON *v=cJSON_IsObject(o)?cJSON_GetObjectItemCaseSensitive(o,"read_only"):NULL;
+        bool valid=cJSON_IsObject(o) && (!v || cJSON_IsBool(v));
+        if(valid && v) read_only=cJSON_IsTrue(v);
+        cJSON_Delete(o);
+        if(!valid) return json_error(req,"400 Bad Request","read_only must be true or false");
+    }
+    esp_err_t err=vault_msc_connect(read_only);
+    if(err==ESP_ERR_NOT_SUPPORTED) return json_error(req,"409 Conflict",
+        "Safely eject the USB drive in Windows before switching between read-only and read/write");
     if(err!=ESP_OK) return json_error(req,"409 Conflict",
         "USB drive could not be opened. Enable USB, finish transfers and check SD free space (at least 66 MB). Existing drive data is never reformatted automatically.");
-    return httpd_resp_send(req,"{\"success\":true}",HTTPD_RESP_USE_STRLEN);
+    return httpd_resp_send(req,read_only?"{\"success\":true,\"read_only\":true}":"{\"success\":true,\"read_only\":false}",
+                           HTTPD_RESP_USE_STRLEN);
 }
 
 static esp_err_t api_files_handler(httpd_req_t *req) {
@@ -488,6 +505,7 @@ static esp_err_t api_settings_get(httpd_req_t *req) {
     cJSON_AddBoolToObject(o, "wifi_hidden", cfg.wifi_hidden);
     cJSON_AddNumberToObject(o, "auto_lock_sec", cfg.auto_lock_sec);
     cJSON_AddBoolToObject(o, "usb_enabled", cfg.usb_enabled);
+    cJSON_AddBoolToObject(o, "usb_read_only", cfg.usb_read_only);
     cJSON_AddNumberToObject(o, "led_mode", cfg.led_mode);
     cJSON_AddNumberToObject(o, "lcd_brightness", cfg.lcd_brightness);
     cJSON_AddNumberToObject(o, "lcd_rotation", cfg.lcd_rotation);
@@ -529,6 +547,7 @@ static esp_err_t api_settings_post(httpd_req_t *req) {
     NUMBER_FIELD(lcd_rotation, 270)
     BOOL_FIELD(wifi_hidden)
     BOOL_FIELD(usb_enabled)
+    BOOL_FIELD(usb_read_only)
     #undef STRING_FIELD
     #undef NUMBER_FIELD
     #undef BOOL_FIELD

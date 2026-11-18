@@ -34,7 +34,7 @@ with tempfile.TemporaryDirectory() as temp:
     crypto_target = Path(temp)/'crypto-test'
     subprocess.run(['gcc', '-std=gnu11', '-g', '-fsanitize=address,undefined',
         '-Werror=implicit-function-declaration', '-I'+str(host/'crypto_mock'),
-        '-I'+str(host/'include'), '-I'+str(main), str(host/'test_crypto_buffers.c'),
+        '-I'+str(host/'include'), '-I'+str(main), str(host/'test_crypto_buffers.c'), '-Wno-deprecated-declarations', '-lcrypto',
         '-o', str(crypto_target)], check=True)
     subprocess.run([str(crypto_target)], check=True)
     subprocess.run(['gcc', '-std=gnu11', '-g', '-fsanitize=address,undefined',
@@ -44,6 +44,11 @@ with tempfile.TemporaryDirectory() as temp:
         str(main/'vault_runtime.c'), str(main/'vault_drive.c'), str(main/'vault_msc.c'),
         '-DVAULT_DRIVE_MAX_SECTORS=262144', '-lcrypto', '-l:libcjson.so.1', '-o', str(target)], check=True)
     subprocess.run([str(target)], check=True)
+    config_target = Path(temp)/'config-test'
+    subprocess.run(['gcc', '-std=gnu11', '-g', '-fsanitize=address,undefined',
+        '-Werror=implicit-function-declaration', '-I'+str(host/'include'), '-I'+str(main),
+        str(host/'test_config_migration.c'), str(host/'support.c'), '-lcrypto', '-o', str(config_target)], check=True)
+    subprocess.run([str(config_target)], check=True)
     disk_root = Path(temp)/'msc'
     disk_root.mkdir()
     disk_target = Path(temp)/'drive-test'
@@ -55,6 +60,35 @@ with tempfile.TemporaryDirectory() as temp:
         str(main/'vault_runtime.c'), str(main/'vault_msc.c'),
         '-lcrypto', '-o', str(disk_target)], check=True)
     subprocess.run([str(disk_target)], check=True)
+    # Smallest staging buffer: one record per SD read (no read-ahead) and
+    # every multi-record span split across several sector-aligned chunks.
+    small_root = Path(temp)/'msc-small-stage'
+    small_root.mkdir()
+    small_target = Path(temp)/'drive-test-small-stage'
+    subprocess.run(['gcc', '-std=gnu11', '-g', '-fsanitize=address,undefined',
+        '-Werror=implicit-function-declaration', '-I'+str(host/'include'), '-I'+str(main),
+        '-DVAULT_DRIVE_MAX_SECTORS=262144', '-DVAULT_DRIVE_TEST', '-DVAULT_DRIVE_CACHE_BLOCKS=8',
+        '-DVAULT_DRIVE_STAGE_BYTES=8192', '-DVAULT_MOUNT_POINT="'+str(small_root)+'"', str(host/'test_drive.c'),
+        str(host/'support.c'), str(main/'vault_storage.c'), str(main/'vault_config.c'),
+        str(main/'vault_runtime.c'), str(main/'vault_msc.c'),
+        '-lcrypto', '-o', str(small_target)], check=True)
+    subprocess.run([str(small_target)], check=True)
+    # Previous release's drive code vs current code on one card directory.
+    compat_root = Path(temp)/'compat'
+    compat_root.mkdir()
+    old_src = host/'legacy'/'vault_drive_v1_1_0.c'
+    binaries = {}
+    for name, src in (('old', old_src), ('new', main/'vault_drive.c')):
+        binaries[name] = Path(temp)/f'compat-{name}'
+        subprocess.run(['gcc', '-std=gnu11', '-g', '-fsanitize=address,undefined',
+            '-Werror=implicit-function-declaration', '-I'+str(host/'include'), '-I'+str(main),
+            '-DVAULT_DRIVE_MAX_SECTORS=262144', '-DVAULT_DRIVE_TEST', '-DVAULT_DRIVE_CACHE_BLOCKS=8',
+            '-DDRIVE_SRC="'+str(src)+'"', '-DVAULT_MOUNT_POINT="'+str(compat_root)+'"',
+            str(host/'test_drive_compat.c'), str(host/'support.c'), str(main/'vault_config.c'),
+            '-lcrypto', '-o', str(binaries[name])], check=True)
+    for name, step in (('old', 'old-write'), ('new', 'new-verify'), ('new', 'new-write'), ('old', 'old-verify')):
+        subprocess.run([str(binaries[name]), step], check=True)
+    print('Encrypted SD drive format compatible with the previous release in both directions', flush=True)
     if shutil.which('fsck.fat'):
         subprocess.run(['fsck.fat', '-n', str(disk_root/'host-volume.img')], check=True)
     else:
