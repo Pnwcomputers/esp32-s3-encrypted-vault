@@ -75,22 +75,31 @@ def check_segment(report, path):
     data = path.read_bytes()
     if len(data) % RECORD:
         report.warn(f'{path.name}: size {len(data)} is not a whole number of records')
-    used = empty = 0
+    used = empty = stale = 0
     worst = 8.0
     for i in range(len(data) // RECORD):
         rec = data[i * RECORD:(i + 1) * RECORD]
         if not any(rec):
-            empty += 1          # never-written block: FAT fills the gap with zeros
+            empty += 1          # never-written slot holding zeros
+            continue
+        label = f'{path.name} {"allocation map" if i == 0 else f"block {i - 1}"}'
+        e = entropy(rec[28:])
+        if not any(rec[:12]) or e < MIN_ENTROPY:
+            # Firmware after 1.1.0 preallocates each new segment file, so a
+            # never-written slot can hold whatever the card stored there before
+            # (old files, often zeros). Without the key, such a slot can't be
+            # told apart from a bad record, so it is a warning; the canary
+            # search is the decisive plaintext check.
+            stale += 1
+            report.warn(f'{label}: not random (entropy {e:.3f}' +
+                        (', zero IV' if not any(rec[:12]) else '') +
+                        '); a never-written slot with old card data, or a plaintext leak')
             continue
         used += 1
-        label = f'{path.name} {"allocation map" if i == 0 else f"block {i - 1}"}'
-        if not any(rec[:12]):
-            report.fail(f'{label}: zero IV on a written record')
-        e = judge(report, label, rec[28:])
-        if e is not None:
-            worst = min(worst, e)
-    report.note(f'{path.name}: {used} written records, {empty} unwritten, '
-                f'lowest entropy {worst:.3f}' if used else f'{path.name}: no written records')
+        worst = min(worst, e)
+    report.note(f'{path.name}: {used} encrypted-looking records, {empty} zero-filled, {stale} not random, '
+                f'lowest entropy {worst:.3f}' if used else
+                f'{path.name}: no encrypted-looking records ({empty} zero-filled, {stale} not random)')
 
 
 def check_tail(report, path, header_len, magic=None):

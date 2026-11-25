@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -29,7 +30,12 @@ typedef struct {
     vault_led_mode_t led_mode;  // Status LED mode
     uint8_t lcd_brightness;     // 10-100%
     uint16_t lcd_rotation;      // 0, 90, 180, 270
+    /* Added after 1.1.0; must stay last. Blobs saved by older firmware end
+     * before this field and load with it false. */
+    bool usb_read_only;         // Default for "Enable SD card drive": write-blocked
 } vault_config_t;
+/* Size of the settings blob saved by firmware before usb_read_only existed. */
+#define VAULT_CONFIG_LEGACY_SIZE offsetof(vault_config_t, usb_read_only)
 
 /**
  * Initialize configuration system and load settings from NVS.

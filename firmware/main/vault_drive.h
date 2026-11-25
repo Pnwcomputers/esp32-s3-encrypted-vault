@@ -17,6 +17,10 @@ void vault_drive_close(void);
 bool vault_drive_ready(void);
 bool vault_drive_creating(void);
 bool vault_drive_exists(void);
+/* Write block: while set, vault_drive_write fails with ESP_ERR_NOT_SUPPORTED.
+ * Cleared whenever the drive closes. */
+void vault_drive_set_read_only(bool read_only);
+bool vault_drive_read_only(void);
 unsigned vault_drive_progress(void);
 esp_err_t vault_drive_read(uint64_t offset, void *data, size_t size);
 esp_err_t vault_drive_write(uint64_t offset, const void *data, size_t size);

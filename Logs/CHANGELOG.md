@@ -8,6 +8,48 @@ Dated sections before 1.0.0 record development history before the first release.
 
 ## [Unreleased]
 
+### Firmware: drive speed
+- Every SD transfer now goes through an internal DMA-capable staging buffer.
+  The ESP32-S3 SD host can't DMA from PSRAM, where the drive's caches live, so
+  ESP-IDF had been splitting each journal/segment write into one 512-byte
+  command per sector. Journal and root writes are now sector-aligned staging
+  chunks, and each run of consecutive records in a segment is one span.
+- Sequential reads fetch up to seven consecutive encrypted records in one SD
+  read (read-ahead) and decrypt whole blocks straight into the USB buffer.
+- One AES-GCM context per drive session instead of re-keying every 4 KiB block.
+- New segment files are preallocated to full size on first write, so they stay
+  unfragmented and FAT fast-seek keeps working. Existing segments are unchanged.
+- Unlock: PBKDF2-HMAC-SHA256 reuses the hashed HMAC pad states, halving SHA-256
+  work per iteration. Output is identical (checked against OpenSSL); existing
+  PINs, iteration count and vault files are unchanged.
+- `sdkconfig.defaults`: 240 MHz CPU (was the 160 MHz default) and an 8 KiB
+  TinyUSB MSC buffer (was 4 KiB). Delete an existing `firmware/sdkconfig` (or set
+  these in menuconfig) to pick them up.
+- Hardware throughput and mount timings for these changes have not been
+  measured yet. The 1.1.0 baseline was about 471 KB/s read, 302 KB/s write.
+
+### Firmware: write block
+- New read-only (write-blocked) USB drive mode: tick **Read-only (write block)**
+  on the drive card before enabling it, or make it the default in Device
+  settings. The host sees a write-protected medium, and every WRITE is refused
+  with DATA PROTECT before it reaches the cache. `POST /api/usb/connect` accepts
+  `{"read_only": bool}`; `/api/status` adds `usb_drive_read_only`; settings add
+  `usb_read_only`; USB diagnostics add `ro=`. Switching modes requires an eject.
+- The settings blob gains a trailing field. Settings saved by 1.1.x load with
+  the write block off. Downgrading to 1.1.x after saving settings resets them to
+  factory defaults, including Wi-Fi.
+
+### Compatibility and tests
+- On-card drive format and journals are unchanged. A host test runs the frozen
+  1.1.0 drive code and the current code against one card directory: current
+  code replays a pending 1.1.0 journal, and 1.1.0 reads data written now.
+- New host checks: PBKDF2 vs OpenSSL, reusable GCM context, read-ahead
+  invalidation and SD-read batching, minimum staging buffer, write block at the
+  drive/MSC/web layers, and settings migration.
+- `tools/verify_sd_encryption.py`: non-random records in segment files are now
+  warnings, since preallocated never-written slots can hold old card data. The
+  canary search remains the decisive check.
+
 ## [1.1.0] - 2026-10-29
 
 ### Firmware

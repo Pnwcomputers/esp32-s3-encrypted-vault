@@ -82,6 +82,7 @@ A full multi-dimension code + security review is in [`docs/CODE_REVIEW.md`](docs
 - **🔐 Encrypted at rest**; AES-256-GCM protects every file chunk and the catalog; a random data key is wrapped with PBKDF2-HMAC-SHA256. A removed card is just ciphertext.
 - **📶 Self-hosted unlock**; The device runs its own WPA2 SoftAP and embedded web portal at `http://192.168.4.1`. No router or internet required; app assets are baked into firmware.
 - **💾 Real encrypted USB drive**; While unlocked, the microSD is exposed to the host as a FAT32 USB Mass Storage drive ("ESP32 VAULT"). The ESP32 decrypts on read and encrypts on write, block by block; the host never sees raw card sectors.
+- **🛡️ Read-only write block**; Connect the drive write-protected so the computer can open and copy files but can't add, change or delete anything. Choose it per connection or as the default.
 - **🔌 USB CDC file protocol + desktop tools**; A second interface offers a framed, CRC-checked file-transfer protocol with a Python CLI and GUI.
 - **🖥️ LCD status + RGB LED**; ST7789 1.47″ LCD status screen (LVGL 9) and a GPIO38 WS2812 status LED (normal / dim / off).
 - **🔒 Lock discipline**; Idle auto-lock, lock-on-eject, and credential rotation that rewraps the data key **without** rewriting file contents. Session keys are zeroed on lock.
@@ -121,7 +122,7 @@ Target: **Waveshare ESP32-S3-LCD-1.47** (no touch), 16 MB flash, 8 MB embedded o
 1. **💾 Insert a FAT32 microSD and power the device over USB.** Failed SD mounts never auto-format the card.
 2. **📶 Connect to `MyEarPods`**, password `53cur3ty` *(factory defaults; **change these in Device settings before trusting the device**; the default password is compiled into the firmware and identical on every un-reconfigured unit)*.
 3. **🔓 Open `http://192.168.4.1`.** On first use, create and confirm a PIN or passphrase (6–63 UTF-8 bytes). On later boots, enter the existing credential.
-4. **🟢 Press "Enable SD card drive"** once, then use **ESP32 VAULT** in File Explorer. It uses nearly all currently free microSD capacity; user files are never stored in ESP32 flash. **Safely eject in Windows before locking**; automatic locking waits while the drive is connected. See [USB drive behavior & limits](docs/USB_DRIVE.md).
+4. **🟢 Press "Enable SD card drive"** once, then use **ESP32 VAULT** in File Explorer. Tick **Read-only (write block)** first if the computer should only read it. It uses nearly all currently free microSD capacity; user files are never stored in ESP32 flash. **Safely eject in Windows before locking**; automatic locking waits while the drive is connected. See [USB drive behavior & limits](docs/USB_DRIVE.md).
 5. **⚙️ Open Device settings** to change Wi-Fi name/password/channel, hidden SSID, idle lock, USB access, LED mode, screen brightness and rotation. Enter the current credential to save, then **Restart** from the page to apply network/USB/display changes.
 6. **🔑 Change the PIN/passphrase** separately using the old credential plus confirmation. This rewraps the data key without rewriting file contents.
 
@@ -196,6 +197,7 @@ See [validation results](docs/VALIDATION.md) and the [remaining hardware checks]
 | Installation & build | [`docs/INSTALLATION.md`](docs/INSTALLATION.md) |
 | Device settings & HTTP API | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) |
 | Encrypted USB drive | [`docs/USB_DRIVE.md`](docs/USB_DRIVE.md) |
+| Android Bluetooth unlock | [Android app](android/README.md) |
 | USB CDC wire protocol | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) |
 | Status LED patterns | [`docs/STATUS_LED.md`](docs/STATUS_LED.md) |
 | Setup & recovery | [`docs/PROVISIONING_AND_RECOVERY.md`](docs/PROVISIONING_AND_RECOVERY.md) |

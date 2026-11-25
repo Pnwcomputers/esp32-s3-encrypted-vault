@@ -37,6 +37,31 @@ that older area are disabled so they cannot consume capacity promised to the
 host. Add new files through File Explorer. The physical SD backing filesystem
 must not be modified externally.
 
+## Read-only mode (write block)
+
+Tick **Read-only (write block)** before pressing **Enable/Reconnect SD card
+drive** to give the computer read access only. To make it the default, turn on
+**Write-block the SD card drive by default** in Device settings. The tick box on
+the drive card still decides each connection. The firmware then:
+
+- reports the medium as write-protected (MODE SENSE), so Windows mounts it
+  read-only and refuses to create, change, rename or delete files;
+- rejects every WRITE command with DATA PROTECT before it reaches the write
+  cache. Refused writes are not counted as device errors;
+- keeps the write block if the host ejects and reloads the medium.
+
+The mode can't change while the drive is connected. Eject it in Windows, then
+reconnect with the other setting. Read-only applies to the USB drive only. If
+an earlier session left a committed journal (for example, power was lost during
+a write), opening the drive still replays it so the volume is consistent. That
+only completes writes made before; it never adds new host data. The setting is
+stored with the other device settings. Settings saved by older firmware load
+with the write block off, and firmware older than this change ignores the
+newer saved settings and uses its defaults.
+
+`POST /api/usb/connect` accepts an optional body `{"read_only": true}`; without
+one it uses the saved default. `/api/status` reports `usb_drive_read_only`.
+
 ## Storage layout
 
 `/sdcard/vault/usb-drive.hdr` contains an authenticated encrypted volume root:
@@ -87,11 +112,38 @@ data. Capacity is calculated at creation, not expanded automatically after
 deleting old phone/client files. Speed is still lower than a native SD reader
 because every block is encrypted and each commit is journaled.
 
-Drive files use 16 KiB stdio buffers to avoid splitting encrypted records into
-small SD operations. Firmware defaults enable FAT fast-seek for read-only
-backing files, with a 1 KiB cluster-link map per open file. Existing build
-configurations must enable `CONFIG_FATFS_USE_FASTSEEK=y` and set
-`CONFIG_FATFS_FAST_SEEK_BUFFER_SIZE=256` to pick up these defaults. The periodic
+### SD I/O path
+
+The ESP32-S3 SD host cannot DMA to or from PSRAM. ESP-IDF therefore splits any
+SD transfer whose buffer is in PSRAM into one 512-byte command per sector. The
+drive's caches live in PSRAM, so every SD read and write goes through one
+internal, DMA-capable staging buffer (32 KiB, falling back to 16 or 8 KiB if
+internal RAM is short; the boot log reports the size). Writes are issued in
+sector-aligned chunks, so FatFs moves whole sectors with multi-sector commands:
+
+- the journal and root are written sequentially in full staging-buffer chunks;
+- segment updates write each run of consecutive records (a map and/or adjacent
+  blocks) as one span, not record by record;
+- sequential reads of written blocks fetch up to seven consecutive records in one
+  SD read (read-ahead). Staged records are discarded whenever the backing files
+  change. Whole-block reads decrypt straight into the USB buffer.
+
+The drive keys one AES-GCM context per session instead of re-keying for every
+block. A new segment file is extended to its full size (about 64.4 MiB) the first
+time it is written, while free card space is still contiguous. Before this,
+segment files grew one flush at a time between journal files and could split
+into more fragments than FAT fast-seek can map. Existing segment files keep
+their current layout. Unwritten record slots in a preallocated segment hold
+whatever the card had there before (often zeros); the authenticated map never
+treats them as data.
+
+Firmware defaults enable FAT fast-seek for read-only backing files, a 240 MHz
+CPU clock (GHASH runs in software on this chip) and an 8 KiB TinyUSB MSC buffer
+(two blocks per USB callback). `sdkconfig.defaults` only applies to options an
+existing `firmware/sdkconfig` does not already set. To pick up these defaults,
+delete `firmware/sdkconfig` and rebuild, or set `CONFIG_FATFS_USE_FASTSEEK=y`,
+`CONFIG_FATFS_FAST_SEEK_BUFFER_SIZE=256`, `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y`
+and `CONFIG_TINYUSB_MSC_BUFSIZE=8192` in menuconfig. The periodic
 LCD update releases the runtime gate before waiting for the display.
 USB reads/writes and explicit/idle cache flushes taking at least 250 ms log `Slow USB`
 with the LBA, size and elapsed time (including waiting for the runtime gate).
@@ -112,9 +164,9 @@ resetting when possible:
 python tools/usb_diagnostics.py --port COM14 --seconds 60
 ```
 
-Backing segment files are not sparse on FAT: a write beyond their current end
-can require allocating a large gap, so buffering alone does not eliminate every
-first-write or mount-time pause. Hardware timing still needs verification.
+The first write to a new 64 MiB segment allocates that whole file once, a short
+pause on top of the flush. Throughput after these changes has not yet been
+measured on hardware. Record new timings in VALIDATION.md.
 
 ## USB integration
 
@@ -130,3 +182,50 @@ eject. Status polling and SCSI readiness polling do not extend an idle session.
 The drive remains a development feature until real Windows create/read/write,
 eject, unlock/remount and power-cycle tests have passed. See VALIDATION.md for
 the current evidence.
+
+### FAT32, exFAT & mount timing
+
+There are two filesystems. The physical microSD holds ciphertext backing files.
+ESP-IDF 5.5.5 builds its FatFs layer with `FF_FS_EXFAT=0`, so keep the card FAT32
+for this firmware. The inner USB volume is what Explorer, macOS or Linux sees.
+The firmware creates FAT32 boot sectors and FSInfo for a new image. Its USB
+read and write callbacks work with logical sectors.
+
+Microsoft's exFAT format uses an allocation bitmap and can represent a
+contiguous file without a FAT chain. It is worth testing on the **inner volume**
+if files of 4 GiB or more are required, or if metadata activity dominates a
+measured workload. Its mount-time benefit and compatibility with the vault's
+recovery tooling need validation. Formatting that volume erases its files.
+Keep the existing default and use a separate test image or spare card for any
+exFAT trial. See the [exFAT specification](https://learn.microsoft.com/en-us/windows/win32/fileio/exfat-specification)
+and [ESP-IDF 5.5.5 FatFs configuration](https://github.com/espressif/esp-idf/blob/v5.5.5/components/fatfs/src/ffconf.h).
+
+A clean image now allocates the write cache on its first nonempty write. Clean
+read-only sessions avoid the approximately 1.5 MiB write working set. A pending
+journal still requires recovery before export and can update encrypted backing
+files even for a write-protected USB session. Write protection applies to the
+host writes. It is not a physical microSD write blocker.
+
+Espressif specifies a 12 Mbit/s USB Full-Speed line rate for the ESP32-S3.
+USB framing and protocol overhead leave less than the equivalent 1.5 MB/s
+for file data before encryption, SD reads, and journal commits enter the
+picture. The RAM cache helps absorb short write bursts. Sustained write speed
+must include the time needed to commit the cache to the card.
+[Espressif USB Host & Device guide](https://docs.espressif.com/projects/esp-iot-solution/en/release-v2.0/esp-iot-solution-en-master.pdf)
+
+#### Compare on the board
+
+1. Use the same board, USB port, microSD model, OS, and firmware configuration.
+   Record the reported SD link clock at boot and DMA staging size at USB export.
+2. Time PIN submit to key unwrap, index load, and image open from the firmware
+   log. Separately time image open to volume visibility on the computer.
+   Compare clean ejects separately from mounts that replay an interrupted write.
+3. Measure sequential file copy and many-small-file copy. Use a fresh dataset
+   for each cold read or control the host cache. For writes record both copy
+   completion and safe-eject completion. Use data well above the 512 KiB
+   plaintext cache and check hashes of copied files.
+4. Compare FAT32 and any experimental exFAT run on disposable inner volumes
+   with the same workload and volume capacity. Record allocation unit sizes,
+   keep runs below 4 GiB per file for a fair comparison, and separately test
+   the exFAT large-file use case. Record median and slowest results, plus
+   `Slow USB` and journal flush log entries.

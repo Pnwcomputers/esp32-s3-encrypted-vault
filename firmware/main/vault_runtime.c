@@ -7,7 +7,8 @@
 #include "freertos/semphr.h"
 #include "esp_timer.h"
 static SemaphoreHandle_t s_mutex;
-static int64_t s_activity;
+static int64_t s_activity, s_next_auth;
+static unsigned s_failures;
 esp_err_t vault_runtime_init(void) {
     s_mutex = xSemaphoreCreateMutex();
     s_activity = esp_timer_get_time();
@@ -23,5 +24,17 @@ void vault_runtime_poll(void) {
         esp_timer_get_time() - s_activity >= (int64_t)cfg.auto_lock_sec * 1000000) {
         vault_storage_lock();
         vault_status_led_set_state(VAULT_LED_LOCKED);
+    }
+}
+bool vault_runtime_auth_allowed(void) {
+    return esp_timer_get_time() >= s_next_auth;
+}
+void vault_runtime_auth_result(bool accepted) {
+    if (accepted) {
+        s_failures = 0;
+        s_next_auth = 0;
+    } else {
+        if (s_failures < 5) s_failures++;
+        s_next_auth = esp_timer_get_time() + ((int64_t)1 << s_failures) * 1000000;
     }
 }

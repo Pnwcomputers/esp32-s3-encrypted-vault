@@ -93,6 +93,38 @@ int main(void) {
     assert(!strcmp(vault_drive_last_error(),"map_io"));
     assert(rename(VAULT_DIR "/segment.saved",path)==0);
     assert(vault_storage_drive_open(false)==ESP_OK);
+    /* Sequential reads stage several records at once. A staged block rewritten
+     * and flushed later must be served from the new data, never stale ciphertext. */
+    for(uint32_t b=0;b<20;b++) { memset(block,(int)(0xa0+b),sizeof(block));assert(vault_drive_write((1000ULL+b)*4096,block,4096)==ESP_OK); }
+    assert(vault_drive_flush()==ESP_OK);
+    for(int pass=0;pass<2;pass++) {
+        unsigned before=s_test_fetches;
+        for(uint32_t b=0;b<20;b++) {
+            assert(vault_drive_read((1000ULL+b)*4096,block,4096)==ESP_OK);
+            for(unsigned j=0;j<4096;j++) assert(block[j]==(uint8_t)(0xa0+b));
+        }
+        /* map + first block, then whole stages of following records */
+        unsigned per=VAULT_DRIVE_STAGE_BYTES/sizeof(record_t),expect=2+(19+per-1)/per;
+        assert(s_test_fetches-before<=expect);
+        if(per>1) assert(s_test_fetches-before<10);
+    }
+    for(uint32_t b=0;b<4;b++) assert(vault_drive_read((1000ULL+b)*4096,block,4096)==ESP_OK); /* stage 1000.. */
+    memset(block,0x5a,sizeof(block));assert(vault_drive_write(1005ULL*4096+512,block,1024)==ESP_OK);
+    assert(vault_drive_read(1005ULL*4096+512,out,1024)==ESP_OK && out[0]==0x5a && out[1023]==0x5a);
+    assert(vault_drive_flush()==ESP_OK);
+    for(uint32_t b=4;b<8;b++) {
+        assert(vault_drive_read((1000ULL+b)*4096,block,4096)==ESP_OK);
+        for(unsigned j=0;j<4096;j++) assert(block[j]==(b==5 && j>=512 && j<1536?0x5a:(uint8_t)(0xa0+b)));
+    }
+    /* Unaligned multi-block read across staged and unstaged records. */
+    assert(vault_drive_read(1002ULL*4096+100,data,8192)==ESP_OK && data[0]==0xa2 && data[8191]==0xa4);
+    for(unsigned i=0;i<sizeof(data);i++)data[i]=(i*37+19)%256;
+    /* Write block: the drive layer itself refuses writes; reads still work. */
+    vault_drive_set_read_only(true);assert(vault_drive_read_only());
+    assert(vault_drive_write(1000ULL*4096,data,512)==ESP_ERR_NOT_SUPPORTED && !vault_drive_dirty());
+    assert(vault_drive_read(1000ULL*4096,block,4096)==ESP_OK && block[0]==0xa0);
+    vault_drive_close();assert(!vault_drive_read_only());
+    assert(vault_storage_drive_open(false)==ESP_OK);
     /* Actual MSC callbacks: capacity, ranges, lock gating, eject and idle lock. */
     uint32_t count;uint16_t size;tud_msc_capacity_cb(0,&count,&size);assert(count==sectors && size==512);
     assert(tud_msc_test_unit_ready_cb(0));assert(!tud_msc_test_unit_ready_cb(1));
@@ -108,15 +140,42 @@ int main(void) {
     /* Unlocking alone never exports the drive; only an explicit connect does. */
     assert(vault_storage_unlock("123456")==ESP_OK);
     assert(!tud_msc_test_unit_ready_cb(0) && !vault_msc_exported());
-    assert(vault_msc_connect()==ESP_OK);
+    assert(vault_msc_connect(false)==ESP_OK && !vault_msc_read_only());
     assert(!tud_msc_test_unit_ready_cb(0));assert(tud_msc_test_unit_ready_cb(0));
     /* SYNCHRONIZE CACHE commits cached writes. */
     const uint8_t sync_cmd[16]={0x35};
     assert(tud_msc_write10_cb(0,901,0,data,512)==512 && vault_drive_dirty());
     assert(tud_msc_scsi_cb(0,sync_cmd,NULL,0)==0 && !vault_drive_dirty());
+    /* The mode is fixed while exported: switching needs an eject first. */
+    assert(vault_msc_connect(true)==ESP_ERR_NOT_SUPPORTED && vault_msc_connect(false)==ESP_OK);
+    assert(tud_msc_start_stop_cb(0,0,false,true) && !vault_msc_exported());
+    /* Write block: the host sees a write-protected medium, writes are refused
+     * without reaching the cache, reads still work, and refusals are not
+     * counted as device errors. */
+    char diag[256],diag_after[256];vault_msc_diagnostics(diag,sizeof(diag));
+    assert(vault_msc_connect(true)==ESP_OK && vault_msc_read_only());
+    assert(!tud_msc_test_unit_ready_cb(0));assert(tud_msc_test_unit_ready_cb(0));
+    assert(!tud_msc_is_writable_cb(0));
+    uint8_t other[512];memset(other,0x77,sizeof(other));
+    assert(tud_msc_write10_cb(0,900,0,other,512)<0 && !vault_drive_dirty() && vault_msc_exported());
+    assert(tud_msc_read10_cb(0,900,0,out,512)==512 && !memcmp(data,out,512));
+    vault_msc_diagnostics(diag_after,sizeof(diag_after));
+    assert(strstr(diag_after,"ro=1") && !strcmp(strstr(diag,"errors="),strstr(diag_after,"errors=")));
+    /* A host media reload (eject, then load) keeps the write block. */
+    assert(tud_msc_start_stop_cb(0,0,false,true) && !vault_msc_exported());
+    assert(tud_msc_start_stop_cb(0,0,true,true) && vault_msc_read_only() && !tud_msc_is_writable_cb(0));
+    assert(tud_msc_start_stop_cb(0,0,false,true));
+    /* Reconnecting read/write restores writes. */
+    assert(vault_msc_connect(false)==ESP_OK && !vault_msc_read_only() && tud_msc_is_writable_cb(0));
     assert(tud_msc_start_stop_cb(0,0,false,true));
     assert(vault_storage_change_pin("123456","abcdef")==ESP_OK);
-    vault_storage_lock();assert(vault_storage_unlock("abcdef")==ESP_OK && vault_storage_drive_open(false)==ESP_OK);
+    vault_storage_lock();
+    assert(vault_storage_unlock("abcdef")==ESP_OK);
+    assert(!tud_msc_start_stop_cb(0,0,true,true) && !vault_msc_exported());
+    assert(vault_storage_drive_open(false)==ESP_OK);
+    assert(!s->dirty_plain && !s->records); /* clean open defers the write cache */
+    vault_drive_set_read_only(true);
+    assert(vault_drive_write(0,out,1)==ESP_ERR_NOT_SUPPORTED && !s->dirty_plain);
     assert(vault_drive_read(900*512,out,512)==ESP_OK && !memcmp(data,out,512));
     vault_storage_lock();puts("Encrypted SD drive checks passed (FAT32, block IO, recovery, authentication, MSC, lock/eject)");
 }

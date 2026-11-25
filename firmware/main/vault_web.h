@@ -14,6 +14,8 @@ typedef void (*vault_web_ui_update_cb_t)(const char *status, const char *detail)
  * Start the ad-hoc Wi-Fi web controller HTTP server.
  */
 esp_err_t vault_web_start(void);
+/* Call with the runtime gate held. */
+void vault_web_revoke_session(void);
 
 /**
  * Stop the web server.

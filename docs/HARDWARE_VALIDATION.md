@@ -14,3 +14,24 @@ Target: Waveshare ESP32-S3-LCD-1.47, without touch input. Retained source pins: 
 10. Test power interruption around catalog and credential replacement, including recovery from `.bak` files. Preserve card copies before tests. Check stack watermarks and minimum heap under combined Wi-Fi/LCD/USB load.
 
 Host tests do not replace these checks. Steps 1–2 and parts of 3 and 5 have passed on a rev 0.2 board (setup/unlock; CDC transfers of 0 B–64 KiB; the USB drive creates and mounts on Windows); see VALIDATION.md for the evidence. The rest are still open.
+
+## Android Bluetooth & USB write protection
+
+Use a provisioned test card with a disposable USB image. Build with the fresh
+`sdkconfig.defaults` so LE Secure Connections and Wi-Fi coexistence are enabled.
+
+1. On Android 16 QPR2 or later, disconnect from the vault Wi-Fi. Scan, choose
+   the board, enter its LCD pairing code in Android's prompt and confirm it in
+   the app. Reject an incorrect code and confirm the PIN entry stays disabled.
+2. Try a wrong vault PIN on BLE, then immediately try it over Wi-Fi. Confirm
+   the shared backoff. Test a 63-byte UTF-8 credential and a bonded reconnect
+   after reboot. Verify USB-disabled, unprovisioned and missing-image states.
+3. Unlock with write protection. Read and hash a file, then verify write,
+   delete and format attempts are denied on the expendable volume. After
+   host media reload, verify write protection still applies. Eject and lock,
+   then authenticate through the web UI without exporting. Verify a host
+   media-start command cannot reload the previous export.
+4. Confirm an app request to switch a mounted read-only export to read/write
+   is refused. Eject, re-export read/write, write a disposable file, safely
+   eject, power-cycle and verify its hash. Repeat the mount and throughput
+   measurements in [USB drive performance](USB_DRIVE.md#compare-on-the-board).

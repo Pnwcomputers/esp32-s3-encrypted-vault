@@ -1,5 +1,6 @@
 #include "vault_storage.h"
 #include "vault_drive.h"
+#include "vault_msc.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -9,6 +10,7 @@
 #include <errno.h>
 #include <time.h>
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_random.h"
 
 static const char *TAG = "vault_storage";
@@ -344,13 +346,18 @@ esp_err_t vault_storage_verify_pin(const char *pin) {
 }
 
 esp_err_t vault_storage_unlock(const char *pin) {
+    int64_t started = esp_timer_get_time();
     uint8_t candidate[VAULT_KEY_SIZE];
     esp_err_t err = unwrap_dek(pin, candidate);
+    int64_t unwrapped = esp_timer_get_time();
     if (err == ESP_OK && !s_vault_unlocked) memcpy(s_vault_dek, candidate, sizeof(candidate));
     vault_secure_zero(candidate, sizeof(candidate));
     if (err != ESP_OK || s_vault_unlocked) return err;
     s_vault_unlocked = true;
     err = load_index();
+    ESP_LOGI(TAG, "Key unwrap %lld ms, vault index load %lld ms (err=%d)",
+             (long long)((unwrapped - started) / 1000),
+             (long long)((esp_timer_get_time() - unwrapped) / 1000), (int)err);
     if (err != ESP_OK) vault_storage_lock();
     return err;
 }
@@ -361,6 +368,7 @@ bool vault_storage_is_unlocked(void) {
 
 void vault_storage_lock(void) {
     vault_drive_close();
+    vault_msc_end_session();
     vault_secure_zero(s_vault_dek, sizeof(s_vault_dek));
     s_vault_unlocked = false;
 
