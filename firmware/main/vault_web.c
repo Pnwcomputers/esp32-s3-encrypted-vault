@@ -12,7 +12,6 @@
 #include "vault_drive.h"
 #include "vault_msc.h"
 #include "cJSON.h"
-#include "esp_timer.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -72,8 +71,9 @@ static esp_err_t send_json(httpd_req_t *req, cJSON *root) {
     return err;
 }
 static char s_token[65];
-static int64_t s_next_auth;
-static unsigned s_failures;
+void vault_web_revoke_session(void) {
+    vault_secure_zero(s_token, sizeof(s_token));
+}
 static bool authenticated(httpd_req_t *req) {
     char supplied[65];
     if (!vault_storage_is_unlocked()) { vault_secure_zero(s_token, sizeof(s_token)); return false; }
@@ -83,11 +83,10 @@ static bool authenticated(httpd_req_t *req) {
     return diff == 0;
 }
 static bool check_credential(const char *pin) {
-    if (esp_timer_get_time() < s_next_auth) return false;
-    if (vault_storage_verify_pin(pin) == ESP_OK) { s_failures = 0; return true; }
-    if (s_failures < 5) s_failures++;
-    s_next_auth = esp_timer_get_time() + (int64_t)(1U << s_failures) * 1000000;
-    return false;
+    if (!vault_runtime_auth_allowed()) return false;
+    bool accepted = vault_storage_verify_pin(pin) == ESP_OK;
+    vault_runtime_auth_result(accepted);
+    return accepted;
 }
 
 static void url_decode(char *dst, const char *src, size_t max_len) {
@@ -155,7 +154,7 @@ static esp_err_t api_unlock_handler(httpd_req_t *req) {
     if (!vault_storage_is_ready()) validation_error = vault_storage_unavailable_reason();
     else if (creating && (strlen(pin) < 6 || strlen(pin) > 63))
         validation_error = "New credential must contain 6–63 UTF-8 bytes";
-    if (validation_error || esp_timer_get_time() < s_next_auth) {
+    if (validation_error || !vault_runtime_auth_allowed()) {
         vault_secure_zero(pin, sizeof(pin));
         vault_secure_zero(buf, sizeof(buf));
         if (validation_error) return json_error(req, "400 Bad Request", validation_error);
@@ -172,7 +171,7 @@ static esp_err_t api_unlock_handler(httpd_req_t *req) {
     vault_secure_zero(buf, sizeof(buf));
     httpd_resp_set_type(req, "application/json");
     if (err == ESP_OK) {
-        s_failures = 0;
+        vault_runtime_auth_result(true);
         uint8_t token[32];
         vault_crypto_random(token, sizeof(token));
         hex_encode(token, sizeof(token), s_token);
@@ -190,8 +189,7 @@ static esp_err_t api_unlock_handler(httpd_req_t *req) {
             "Vault setup failed while encrypting or saving to the SD card" :
             "Vault could not be read or decrypted; check the SD card");
     } else {
-        if (s_failures < 5) s_failures++;
-        s_next_auth = esp_timer_get_time() + (int64_t)(1U << s_failures) * 1000000;
+        vault_runtime_auth_result(false);
         vault_status_led_set_state(VAULT_LED_AUTH_FAILURE);
         if (s_display_cb) s_display_cb("AUTH FAILED", "Wrong PIN Entered");
         return httpd_resp_send(req, "{\"success\":false,\"error\":\"Incorrect PIN\"}", HTTPD_RESP_USE_STRLEN);

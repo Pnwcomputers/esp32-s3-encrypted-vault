@@ -27,6 +27,7 @@
 #include "vault_config.h"
 #include "vault_storage.h"
 #include "vault_web.h"
+#include "vault_ble.h"
 #include "vault_runtime.h"
 #include "cdc_protocol.h"
 #include "driver/ledc.h"
@@ -206,7 +207,8 @@ esp_err_t init_sd_card(void) {
         vault_storage_set_unavailable_reason(ret == ESP_FAIL ? sd_probe_filesystem(&slot_config) :
             "SD card not detected; reseat it and restart");
     } else {
-        ESP_LOGI(TAG, "SD Card mounted successfully.");
+        ESP_LOGI(TAG, "SD card mounted at %d kHz, %u-bit bus", card->real_freq_khz,
+                 (unsigned)card->host.get_bus_width(card->host.slot));
     }
     return ret;
 }
@@ -286,6 +288,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(vault_web_start());
     cdc_protocol_set_ui_callback(usb_progress);
     if (s_boot_cfg.usb_enabled) ESP_ERROR_CHECK(cdc_protocol_init());
+    if (vault_ble_start() != ESP_OK) ESP_LOGW(TAG, "Bluetooth unlock unavailable");
     if (!sd_ok) vault_status_led_set_state(VAULT_LED_RECOVERY_ERROR);
     else vault_status_led_set_state(VAULT_LED_LOCKED);
 
@@ -303,7 +306,11 @@ void app_main(void) {
                  s_boot_cfg.wifi_ssid, (unsigned long)free_mb,
                  (unsigned long)total, (unsigned long)count,
                  sd_ok ? "" : "\n", sd_ok ? "" : vault_storage_unavailable_reason());
-        display_status(unlocked ? "VAULT UNLOCKED" : "VAULT LOCKED", detail);
+        int32_t passkey = vault_ble_passkey();
+        if (passkey >= 0) {
+            snprintf(detail, sizeof(detail), "Enter on Android\n\n%06ld", (long)passkey);
+            display_status("BLUETOOTH PAIRING", detail);
+        } else display_status(unlocked ? "VAULT UNLOCKED" : "VAULT LOCKED", detail);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

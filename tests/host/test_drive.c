@@ -169,7 +169,13 @@ int main(void) {
     assert(vault_msc_connect(false)==ESP_OK && !vault_msc_read_only() && tud_msc_is_writable_cb(0));
     assert(tud_msc_start_stop_cb(0,0,false,true));
     assert(vault_storage_change_pin("123456","abcdef")==ESP_OK);
-    vault_storage_lock();assert(vault_storage_unlock("abcdef")==ESP_OK && vault_storage_drive_open(false)==ESP_OK);
+    vault_storage_lock();
+    assert(vault_storage_unlock("abcdef")==ESP_OK);
+    assert(!tud_msc_start_stop_cb(0,0,true,true) && !vault_msc_exported());
+    assert(vault_storage_drive_open(false)==ESP_OK);
+    assert(!s->dirty_plain && !s->records); /* clean open defers the write cache */
+    vault_drive_set_read_only(true);
+    assert(vault_drive_write(0,out,1)==ESP_ERR_NOT_SUPPORTED && !s->dirty_plain);
     assert(vault_drive_read(900*512,out,512)==ESP_OK && !memcmp(data,out,512));
     vault_storage_lock();puts("Encrypted SD drive checks passed (FAT32, block IO, recovery, authentication, MSC, lock/eject)");
 }

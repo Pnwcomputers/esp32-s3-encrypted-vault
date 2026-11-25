@@ -16,7 +16,11 @@
 
 static bool s_worker, s_changed, s_flusher;
 /* Write block chosen at the last connect; reapplied when the host reloads media. */
-static bool s_read_only;
+static bool s_read_only, s_reload_allowed;
+void vault_msc_end_session(void) {
+    s_reload_allowed = false;
+    s_changed = false;
+}
 static int64_t s_last_write;
 static uint32_t s_reads,s_writes,s_errors,s_error_lba,s_error_size,s_max_ms;
 static int s_error_code;
@@ -74,7 +78,11 @@ esp_err_t vault_msc_connect(bool read_only) {
     /* The host caches write protection at mount; changing it needs an eject. */
     if(vault_drive_ready()) return vault_drive_read_only()==read_only?ESP_OK:ESP_ERR_NOT_SUPPORTED;
     bool create=!vault_drive_exists();
+    int64_t started = esp_timer_get_time();
     esp_err_t err=vault_storage_drive_open(create);
+    ESP_LOGI("vault_msc", "USB image %s prepared in %lld ms (read-only=%u, err=%d)",
+             create ? "creation" : "open", (long long)((esp_timer_get_time() - started) / 1000),
+             read_only, (int)err);
     if(err!=ESP_OK) return err;
     s_read_only=read_only;vault_drive_set_read_only(read_only);
     if(create) {
@@ -83,6 +91,7 @@ esp_err_t vault_msc_connect(bool read_only) {
             s_worker=false;vault_drive_close();return ESP_ERR_NO_MEM;
         }
     } else s_changed=true;
+    s_reload_allowed = true;
     return ESP_OK;
 }
 /* Replace esp_tinyusb's physical-medium ownership hooks. The physical SD FAT
@@ -150,9 +159,14 @@ int32_t tud_msc_write10_cb(uint8_t lun,uint32_t lba,uint32_t offset,uint8_t *buf
 }
 bool tud_msc_start_stop_cb(uint8_t lun,uint8_t power,bool start,bool eject) {
     vault_runtime_enter();bool ok=!lun;
-    if(ok && eject && !start) vault_drive_close();
+    if (ok && eject && !start) {
+        ok = !vault_drive_ready() || flush_drive() == ESP_OK;
+        vault_drive_close();
+        if (!ok) tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x0c, 0);
+    }
     if(ok && eject && start && !vault_drive_ready()) {
-        ok=vault_storage_is_unlocked() && vault_storage_drive_open(false)==ESP_OK;
+        ok=enabled() && s_reload_allowed && vault_storage_is_unlocked() &&
+           vault_storage_drive_open(false)==ESP_OK;
         if(ok) { vault_drive_set_read_only(s_read_only);s_changed=true; }
     }
     vault_runtime_leave();return ok;

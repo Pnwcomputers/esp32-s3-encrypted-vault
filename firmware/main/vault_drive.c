@@ -424,6 +424,32 @@ static uint8_t *stage_alloc(size_t *size) {
 static uint32_t initial_cluster_sectors(uint64_t sectors) {
     return sectors>=8388608?64:sectors>=1048576?8:1;
 }
+/* Clean mounts and read-only traffic do not need the write working set.
+ * Recovery must accommodate a batch from a full-sized cache on any boot. */
+static bool allocate_write_cache(bool recovery) {
+    for (uint32_t cap = VAULT_DRIVE_CACHE_BLOCKS;; cap = FALLBACK_CACHE_BLOCKS) {
+        s->cap = cap;
+        s->dirty_plain = big_calloc((size_t)cap * BLOCK_BYTES);
+        s->records = big_calloc(2 * (size_t)cap * sizeof(record_t));
+        s->batch = big_calloc(batch_bytes(cap));
+        s->dirty_block = calloc(cap, sizeof(uint32_t));
+        s->order = calloc(cap, sizeof(uint16_t));
+        if (s->dirty_plain && s->records && s->batch && s->dirty_block && s->order)
+            return true;
+        release(s->dirty_plain, (size_t)cap * BLOCK_BYTES);
+        release(s->records, 2 * (size_t)cap * sizeof(record_t));
+        release(s->batch, batch_bytes(cap));
+        free(s->dirty_block);
+        free(s->order);
+        s->dirty_plain = s->batch = NULL;
+        s->records = NULL;
+        s->dirty_block = NULL;
+        s->order = NULL;
+        s->cap = 0;
+        if (recovery || cap == FALLBACK_CACHE_BLOCKS) return false;
+    }
+}
+
 esp_err_t vault_drive_open(const uint8_t key[32],bool create) {
     if(!key || s || (create && vault_drive_exists())) return ESP_ERR_INVALID_STATE;
     /* The small working set prefers the 8 MB PSRAM so it does not fail under
@@ -443,20 +469,6 @@ esp_err_t vault_drive_open(const uint8_t key[32],bool create) {
     s->stage=stage_alloc(&s->stage_size);
     s->gcm=vault_gcm_create(key);
     if(!s->stage || !s->gcm) { drop();return ESP_ERR_NO_MEM; }
-    /* The write cache and batch buffers (~1.6 MB) need PSRAM; without it a
-     * small internal-RAM cache still works, just with smaller batches. */
-    for(uint32_t cap=VAULT_DRIVE_CACHE_BLOCKS;;cap=FALLBACK_CACHE_BLOCKS) {
-        s->cap=cap;
-        s->dirty_plain=big_calloc((size_t)cap*BLOCK_BYTES);
-        s->records=big_calloc(2*(size_t)cap*sizeof(record_t));
-        s->batch=big_calloc(batch_bytes(cap));
-        s->dirty_block=calloc(cap,sizeof(uint32_t));s->order=calloc(cap,sizeof(uint16_t));
-        if(s->dirty_plain && s->records && s->batch && s->dirty_block && s->order)break;
-        release(s->dirty_plain,(size_t)cap*BLOCK_BYTES);release(s->records,2*(size_t)cap*sizeof(record_t));
-        release(s->batch,batch_bytes(cap));free(s->dirty_block);free(s->order);
-        s->dirty_plain=s->batch=NULL;s->records=NULL;s->dirty_block=NULL;s->order=NULL;
-        if(cap==FALLBACK_CACHE_BLOCKS) { drop();return ESP_ERR_NO_MEM; }
-    }
     if(create) {
         uint64_t total,free_bytes;
         if(esp_vfs_fat_info(VAULT_MOUNT_POINT,&total,&free_bytes)!=ESP_OK)goto fail;
@@ -475,7 +487,10 @@ esp_err_t vault_drive_open(const uint8_t key[32],bool create) {
         if(!valid_root())goto fail;
         s_creating=true;return ESP_OK;
     }
-    if(exists(JOURNAL) && !replay_journal())goto fail;
+    if (exists(JOURNAL)) {
+        if (!allocate_write_cache(true)) { drop(); return ESP_ERR_NO_MEM; }
+        if (!replay_journal()) goto fail;
+    }
     if(!exists(ROOT))rename(ROOT ".bak",ROOT);
     rd_t r;
     if(!rd_begin(&r,ROOT))goto fail;
@@ -620,6 +635,10 @@ static esp_err_t transfer(uint64_t offset,void *data,size_t size,bool write) {
     if(write && s_read_only)return ESP_ERR_NOT_SUPPORTED;
     uint64_t capacity=(uint64_t)s->root.sectors*512;
     if((size && !data) || offset>capacity || size>capacity-offset)return ESP_ERR_INVALID_ARG;
+    if (write && size && !s->dirty_plain && !allocate_write_cache(false)) {
+        s_last_error = "cache_alloc";
+        return ESP_ERR_NO_MEM;
+    }
     uint8_t *p=data;
     while(size) {
         uint32_t block=offset/BLOCK_BYTES;size_t within=offset%BLOCK_BYTES,n=BLOCK_BYTES-within;if(n>size)n=size;

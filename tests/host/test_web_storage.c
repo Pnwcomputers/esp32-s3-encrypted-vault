@@ -15,10 +15,10 @@ int main(void) {
  assert(vault_runtime_init()==ESP_OK);assert(vault_config_init()==ESP_OK);assert(vault_storage_init()==ESP_OK);
  // Setup validation and SD write failures must not report wrong PIN or throttle retries.
  call("/api/unlock",HTTP_POST,"{\"pin\":\"1234\"}",NULL,api_unlock_handler);
- assert(strstr(r.status,"400") && strstr(r.response,"6–63") && s_failures==0);
+ assert(strstr(r.status,"400") && strstr(r.response,"6–63") && vault_runtime_auth_allowed());
  assert(mkdir(VAULT_DIR "/index.tmp",0700)==0);
  call("/api/unlock",HTTP_POST,"{\"pin\":\"123456\"}",NULL,api_unlock_handler);
- assert(strstr(r.status,"500") && strstr(r.response,"setup failed") && s_failures==0);
+ assert(strstr(r.status,"500") && strstr(r.response,"setup failed") && vault_runtime_auth_allowed());
  assert(!vault_storage_is_provisioned() && !vault_storage_is_unlocked());
  assert(rmdir(VAULT_DIR "/index.tmp")==0);
  call("/api/unlock",HTTP_POST,"{\"pin\":\"123456\"}",NULL,api_unlock_handler);

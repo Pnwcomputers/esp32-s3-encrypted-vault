@@ -197,6 +197,7 @@ See [validation results](docs/VALIDATION.md) and the [remaining hardware checks]
 | Installation & build | [`docs/INSTALLATION.md`](docs/INSTALLATION.md) |
 | Device settings & HTTP API | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) |
 | Encrypted USB drive | [`docs/USB_DRIVE.md`](docs/USB_DRIVE.md) |
+| Android Bluetooth unlock | [Android app](android/README.md) |
 | USB CDC wire protocol | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) |
 | Status LED patterns | [`docs/STATUS_LED.md`](docs/STATUS_LED.md) |
 | Setup & recovery | [`docs/PROVISIONING_AND_RECOVERY.md`](docs/PROVISIONING_AND_RECOVERY.md) |
