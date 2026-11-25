@@ -35,3 +35,5 @@ Use a provisioned test card with a disposable USB image. Build with the fresh
    is refused. Eject, re-export read/write, write a disposable file, safely
    eject, power-cycle and verify its hash. Repeat the mount and throughput
    measurements in [USB drive performance](USB_DRIVE.md#compare-on-the-board).
+
+See the [certification and tamper-resistance roadmap](CERTIFICATION_AND_TAMPER_RESISTANCE.md) for production design and evaluation criteria.
