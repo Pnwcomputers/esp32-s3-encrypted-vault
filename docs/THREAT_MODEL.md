@@ -22,3 +22,5 @@ Filename and timestamp catalog fields are encrypted, but raw file container head
 NVS configuration is not protected by flash encryption in this build. Secure Boot, signed firmware updates, anti-rollback counters, persisted retry limits, independent recovery wrapping and FIDO security-key support are not implemented. No eFuses are modified.
 
 Checked file writes and backup rename recovery improve interruption handling but do not guarantee transaction durability across all FAT/SD power failures. Card cloning, replay, deletion, physical probes, fault injection, side channels and malicious firmware are outside the current protection boundary. There has been no independent security audit.
+
+See the [certification and tamper-resistance roadmap](CERTIFICATION_AND_TAMPER_RESISTANCE.md) for production design and evaluation criteria.

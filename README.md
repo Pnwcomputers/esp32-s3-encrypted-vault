@@ -40,11 +40,11 @@ Commercial encrypted USB drives work well, but they're expensive, their capacity
 | **Encryption** | AES-256-GCM, done on the ESP32 | AES-256 (usually XTS), done in the drive |
 | **Unlock** | Phone/browser over the device's own Wi-Fi | Physical keypad on the drive |
 | **Firmware** | Open source (MIT) and auditable | Closed |
-| **Certification & tamper resistance** | None yet | Often FIPS 140-2/140-3 validated, epoxy-sealed, brute-force wipe |
+| **Certification & tamper resistance** | [Prototype roadmap](docs/CERTIFICATION_AND_TAMPER_RESISTANCE.md) | Varies by model and validated configuration |
 
 <sub>Typical 64 GB street prices as of Oct 2026 for drives such as the Apricorn Aegis Secure Key 3NX, Kingston IronKey Keypad 200 and iStorage datAshur PRO2; prices vary by retailer. Board price from Waveshare's store.</sub>
 
-**Be honest about the trade-off:** commercial drives carry certifications, physical tamper protection and years of review. This project doesn't yet. It's great for learning, tinkering and low-stakes privacy; for anything that truly matters, wait for the roadmap's security items (device-bound keys, persistent brute-force limits, Secure Boot) and an independent review.
+Use disposable test data with the prototype. Compare commercial models using their exact certificates and published security policies.
 
 ---
 
@@ -197,6 +197,7 @@ See [validation results](docs/VALIDATION.md) and the [remaining hardware checks]
 | Installation & build | [`docs/INSTALLATION.md`](docs/INSTALLATION.md) |
 | Device settings & HTTP API | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) |
 | Encrypted USB drive | [`docs/USB_DRIVE.md`](docs/USB_DRIVE.md) |
+| Certification & tamper resistance | [Roadmap](docs/CERTIFICATION_AND_TAMPER_RESISTANCE.md) |
 | Android Bluetooth unlock | [Android app](android/README.md) |
 | USB CDC wire protocol | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) |
 | Status LED patterns | [`docs/STATUS_LED.md`](docs/STATUS_LED.md) |
